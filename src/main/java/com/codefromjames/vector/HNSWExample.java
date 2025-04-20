@@ -7,214 +7,256 @@ import java.util.*;
 import java.lang.Math;
 
 class Vertex {
-    private final double[] vector;
-    private final Map<String, Object> metadata;
+    private double[] vector;
+    private Map<String, Object> metadata;
+    private int maxLevel;
+    private List<List<Vertex>> edges;
 
     public Vertex(double[] vector) {
+        this(vector, Map.of());
+    }
+
+    public Vertex(double[] vector, Map<String, Object> metadata) {
         this.vector = vector;
-        this.metadata = new HashMap<>();
+        this.metadata = new HashMap<>(metadata);
+        this.maxLevel = 0;
+        this.edges = new ArrayList<>();
     }
 
-    public void setMetadata(String key, Object value) {
-        metadata.put(key, value);
+    public void setMaxLevel(int level) {
+        this.maxLevel = level;
+        while (edges.size() <= level) {
+            edges.add(new ArrayList<>());
+        }
     }
 
-    public Object getMetadata(String key) {
-        return metadata.get(key);
+    public List<Vertex> getEdges(int level) {
+        return edges.get(level);
+    }
+
+    public void addEdge(Vertex neighbor, int level) {
+        edges.get(level).add(neighbor);
+    }
+
+    public void removeEdge(Vertex neighbor, int level) {
+        edges.get(level).remove(neighbor);
     }
 
     public double[] getVector() {
-        return vector.clone(); // Return a copy to avoid external modifications
+        return vector;
     }
 
-    public int getDimension() {
-        return vector.length;
+    public Map<String, Object> getMetadata() {
+        return metadata;
+    }
+
+    public int getMaxLevel() {
+        return maxLevel;
+    }
+
+    public void setMetadata(String id, Object string) {
+        metadata.put(id, string);
+    }
+
+    public Object getMetadata(String id) {
+        return metadata.get(id);
     }
 
     @Override
-    public final boolean equals(Object o) {
-        if (!(o instanceof Vertex vertex)) return false;
-
-        return Arrays.equals(vector, vertex.vector) && metadata.equals(vertex.metadata);
-    }
-
-    @Override
-    public int hashCode() {
-        int result = Arrays.hashCode(vector);
-        result = 31 * result + metadata.hashCode();
-        return result;
+    public String toString() {
+        return "Vertex{" +
+                "vector=" + Arrays.toString(vector) +
+                ", metadata=" + metadata +
+                ", maxLevel=" + maxLevel +
+                '}';
     }
 }
 
 class HNSWIndex {
-    private static final int MAX_LEVEL = 16;
-    private List<List<Vertex>> levels;
-    private Random random;
+    private static final double LEVEL_PROBABILITY = 0.1;
+    private static final int MAX_LEVEL = 8;
+    private static final int M = 5;
 
-    public HNSWIndex() {
-        this.levels = new ArrayList<>();
-        for (int i = 0; i <= MAX_LEVEL; i++) {
-            levels.add(new ArrayList<>());
+    private List<Vertex> vertices = new ArrayList<>();
+    private List<List<Vertex>> entryPoints = new ArrayList<>();
+    private int currentMaxLevel = -1;
+
+    public void addVertex(double[] vector, Map<String, Object> metadata) {
+        Vertex newVertex = new Vertex(vector, metadata);
+        int level = 0;
+        while (Math.random() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
+            level++;
         }
-        this.random = new Random();
+        newVertex.setMaxLevel(level);
+
+        if (level > currentMaxLevel) {
+            currentMaxLevel = level;
+            while (entryPoints.size() <= level) {
+                entryPoints.add(new ArrayList<>());
+            }
+        }
+
+        for (int currentLevel = newVertex.getMaxLevel(); currentLevel >= 0; currentLevel--) {
+            List<Vertex> neighbors = greedySearch(newVertex, currentLevel);
+            neighbors.sort(Comparator.comparingDouble(v -> cosineDistance(newVertex, v)));
+            if (neighbors.size() > M) {
+                neighbors = neighbors.subList(0, M);
+            }
+
+            for (Vertex neighbor : neighbors) {
+                newVertex.addEdge(neighbor, currentLevel);
+                neighbor.addEdge(newVertex, currentLevel);
+            }
+
+            if (currentLevel == newVertex.getMaxLevel()) {
+                entryPoints.get(currentLevel).add(newVertex);
+            }
+        }
+
+        vertices.add(newVertex);
+    }
+
+    private List<Vertex> greedySearch(Vertex target, int level) {
+        Set<Vertex> visited = new HashSet<>();
+        PriorityQueue<VertexDistance> candidates = new PriorityQueue<>(Comparator.comparingDouble(vd -> vd.distance));
+
+        for (Vertex entry : entryPoints.get(level)) {
+            candidates.add(new VertexDistance(entry, cosineDistance(target, entry)));
+        }
+
+        List<Vertex> best = new ArrayList<>();
+        while (!candidates.isEmpty()) {
+            VertexDistance current = candidates.poll();
+            Vertex v = current.vertex;
+            if (visited.contains(v)) continue;
+            visited.add(v);
+            best.add(v);
+
+            for (Vertex neighbor : v.getEdges(level)) {
+                if (!visited.contains(neighbor)) {
+                    double dist = cosineDistance(target, neighbor);
+                    candidates.add(new VertexDistance(neighbor, dist));
+                }
+            }
+        }
+
+        best.sort(Comparator.comparingDouble(v -> cosineDistance(target, v)));
+        return best.subList(0, Math.min(best.size(), M));
+    }
+
+    static double cosineSimilarity(Vertex v1, Vertex v2) {
+        double dotProduct = 0;
+        for (int i = 0; i < v1.getVector().length; i++) {
+            dotProduct += v1.getVector()[i] * v2.getVector()[i];
+        }
+        double norm1 = norm(v1.getVector());
+        double norm2 = norm(v2.getVector());
+        return dotProduct / (norm1 * norm2);
+    }
+
+    static double cosineDistance(Vertex v1, Vertex v2) {
+        return 1 - cosineSimilarity(v1, v2);
+    }
+
+    private static double norm(double[] vector) {
+        double sum = 0;
+        for (double v : vector) {
+            sum += v * v;
+        }
+        return Math.sqrt(sum);
     }
 
     public List<Vertex> getAllVertex() {
-        return levels.stream()
-                .flatMap(Collection::stream)
-                .distinct()
-                .toList();
+        return this.vertices;
     }
 
-    // Insert a vertex into the index
-    public void insert(Vertex v) {
-        int level = randomLevel();
-        while (levels.size() <= level) {
-            levels.add(new ArrayList<>());
+    private static class VertexDistance {
+        Vertex vertex;
+        double distance;
+
+        VertexDistance(Vertex v, double d) {
+            vertex = v;
+            distance = d;
         }
-        insert(v, level);
     }
 
-    private void insert(Vertex v, int level) {
-        if (level == 0) {
-            List<Vertex> layer = levels.get(0);
-            int idx = findEntryPoint(v).getDimension();
-            if (idx < layer.size()) {
-                layer.add(idx + 1, v);
-            } else {
-                layer.add(v);
-            }
-            return;
+    public void removeVertex(Vertex v) {
+        vertices.remove(v);
+        for (int l = 0; l <= currentMaxLevel; l++) {
+            entryPoints.get(l).remove(v);
         }
 
-        Vertex entryPoint = findEntryPoint(v);
-        List<Vertex> currentLayer = levels.get(level);
-
-        // Search the higher level to find the correct insertion point
-        int idx = binarySearch(currentLayer, v);
-
-        if (idx < 0) {
-            idx = -idx - 1;
-        }
-        currentLayer.add(idx, v);
-
-        insert(v, level - 1);
-    }
-
-    private Vertex findEntryPoint(Vertex v) {
-        // For simplicity, we use the first vertex in the highest non-empty level as entry point
-        for (int i = levels.size() - 1; i >= 0; i--) {
-            List<Vertex> layer = levels.get(i);
-            if (!layer.isEmpty()) {
-                return layer.get(0);
-            }
-        }
-        // If no vertices are present, use a dummy vertex // TODO: Why not just return `v`?
-        return new Vertex(new double[v.getDimension()]);
-    }
-
-    private int binarySearch(List<Vertex> layer, Vertex v) {
-        int left = 0;
-        int right = layer.size() - 1;
-
-        while (left <= right) {
-            int mid = (left + right) / 2;
-            if (cosineSimilarity(layer.get(mid), v) < 0) {
-                left = mid + 1;
-            } else {
-                right = mid - 1;
+        for (Vertex other : vertices) {
+            for (int l = 0; l <= other.getMaxLevel(); l++) {
+                other.removeEdge(v, l);
             }
         }
 
-        return -(left + 1);
-    }
-
-    // Remove a vertex from the index
-    public void remove(Vertex v) {
-        for (int i = levels.size() - 1; i >= 0; i--) {
-            List<Vertex> layer = levels.get(i);
-            int idx = findVertexIndex(layer, v);
-            if (idx != -1) {
-                layer.remove(idx);
-            }
+        for (int l = 0; l <= v.getMaxLevel(); l++) {
+            v.getEdges(l).clear();
         }
-    }
 
-    // Update a vertex in the index
-    public void update(Vertex oldV, Vertex newV) {
-        remove(oldV);
-        insert(newV);
-    }
-
-    // Query for similar vertices
-    public List<Vertex> search(Vertex query, int k) {
-        PriorityQueue<Vertex> result = new PriorityQueue<>(k, getVertexComparator(query));
-        Vertex entryPoint = findEntryPoint(query);
-
-        // Perform a greedy search from the highest level to the lowest
-        for (int i = levels.size() - 1; i >= 0; i--) {
-            List<Vertex> layer = levels.get(i);
-            int idx = findVertexIndex(layer, entryPoint);
-            while (idx >= 0 && idx < layer.size()) {
-                Vertex v = layer.get(idx);
-                if (!result.contains(v)) {
-                    result.add(v);
-                    if (result.size() > k) {
-                        result.poll();
-                    }
+        if (vertices.isEmpty()) {
+            currentMaxLevel = -1;
+        } else {
+            int newMax = 0;
+            for (Vertex vertex : vertices) {
+                if (vertex.getMaxLevel() > newMax) {
+                    newMax = vertex.getMaxLevel();
                 }
-                // Move to the next vertex in the current layer
-                idx++;
+            }
+            currentMaxLevel = newMax;
+        }
+    }
+
+    public void updateMetadata(Vertex v, Map<String, Object> newMetadata) {
+        v.getMetadata().putAll(newMetadata);
+    }
+
+    public List<Vertex> search(double[] queryVector, int k) {
+        Vertex queryVertex = new Vertex(queryVector, new HashMap<>());
+        List<Vertex> candidates = new ArrayList<>();
+
+        for (int level = currentMaxLevel; level >= 0; level--) {
+            List<Vertex> initialCandidates = entryPoints.get(level);
+            List<Vertex> levelCandidates = greedySearchForSearch(queryVertex, level, initialCandidates);
+            candidates.addAll(levelCandidates);
+        }
+
+        candidates.sort(getVertexComparator(queryVertex));
+        return candidates.subList(0, Math.min(candidates.size(), k));
+    }
+
+    static Comparator<Vertex> getVertexComparator(Vertex queryVertex) {
+        return Comparator.comparingDouble(v -> cosineDistance(v, queryVertex));
+    }
+
+    private List<Vertex> greedySearchForSearch(Vertex queryVertex, int level, List<Vertex> initialCandidates) {
+        Set<Vertex> visited = new HashSet<>();
+        PriorityQueue<VertexDistance> candidates = new PriorityQueue<>(Comparator.comparingDouble(vd -> vd.distance));
+
+        for (Vertex start : initialCandidates) {
+            candidates.add(new VertexDistance(start, cosineDistance(queryVertex, start)));
+        }
+
+        List<Vertex> best = new ArrayList<>();
+        while (!candidates.isEmpty()) {
+            VertexDistance current = candidates.poll();
+            Vertex v = current.vertex;
+            if (visited.contains(v)) continue;
+            visited.add(v);
+            best.add(v);
+
+            for (Vertex neighbor : v.getEdges(level)) {
+                if (!visited.contains(neighbor)) {
+                    double dist = cosineDistance(queryVertex, neighbor);
+                    candidates.add(new VertexDistance(neighbor, dist));
+                }
             }
         }
 
-        return new ArrayList<>(result);
-    }
-
-    static Comparator<Vertex> getVertexComparator(Vertex query) {
-        return Comparator.comparingDouble(v -> -cosineSimilarity(query, v));
-    }
-
-    static double cosineSimilarity(Vertex a, Vertex b) {
-        double[] vecA = a.getVector();
-        double[] vecB = b.getVector();
-
-        if (vecA.length != vecB.length) {
-            throw new IllegalArgumentException("Vectors must be of the same dimension");
-        }
-
-        double dotProduct = 0.0;
-        double normA = 0.0;
-        double normB = 0.0;
-
-        for (int i = 0; i < vecA.length; i++) {
-            dotProduct += vecA[i] * vecB[i];
-            normA += Math.pow(vecA[i], 2);
-            normB += Math.pow(vecB[i], 2);
-        }
-
-        if (normA == 0 || normB == 0) {
-            return 0.0; // To avoid division by zero
-        }
-
-        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-    }
-
-    private int randomLevel() {
-        int level = 0;
-        while (random.nextDouble() < 0.5 && level < MAX_LEVEL) {
-            level++;
-        }
-        return level;
-    }
-
-    private int findVertexIndex(List<Vertex> layer, Vertex v) {
-        for (int i = 0; i < layer.size(); i++) {
-            if (Arrays.equals(layer.get(i).getVector(), v.getVector())) {
-                return i;
-            }
-        }
-        return -1;
+        best.sort(Comparator.comparingDouble(v -> cosineDistance(queryVertex, v)));
+        return best;
     }
 }
 
@@ -249,8 +291,7 @@ public class HNSWExample {
 
         for (double[] vector : data) {
             Vertex v = new Vertex(vector);
-            v.setMetadata("id", Arrays.toString(vector));
-            index.insert(v);
+            index.addVertex(vector, Map.of("id", Arrays.toString(vector)));
         }
 
         double[] queryVector = {5.0, 6.0, 7.0};
@@ -258,7 +299,7 @@ public class HNSWExample {
         LOGGER.info("Searching vertex: {}, Metadata: {}", Arrays.toString(queryVertex.getVector()), queryVertex.getMetadata("id"));
 
         System.out.println();
-        final List<Vertex> similarVertices = index.search(queryVertex, 2);
+        final List<Vertex> similarVertices = index.search(queryVector, 5);
         for (Vertex v : similarVertices) {
             LOGGER.info("Similar vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), HNSWIndex.cosineSimilarity(queryVertex, v));
         }
