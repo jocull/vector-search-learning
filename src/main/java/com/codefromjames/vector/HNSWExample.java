@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.lang.Math;
+import java.util.stream.IntStream;
 
 class Vertex {
     private double[] vector;
@@ -262,32 +263,45 @@ class HNSWIndex {
 
 public class HNSWExample {
     static final Logger LOGGER = LoggerFactory.getLogger(Math.class);
+    static final Random RANDOM = new Random();
+
+    static double[] randomVector() {
+        return new double[]{
+                RANDOM.nextDouble(-1000, 1000),
+                RANDOM.nextDouble(-1000, 1000),
+                RANDOM.nextDouble(-1000, 1000),
+        };
+    }
 
     public static void main(String[] args) {
         final HNSWIndex index = new HNSWIndex();
 
-        final double[][] data = {
-                {1.0, 2.0, 3.0},
-                {4.0, 5.0, 6.0},
-                {7.0, 8.0, 9.0},
-                {2.0, 3.0, 4.0},
-                {5.0, 6.0, 7.0},
-                {8.0, 9.0, 10.0},
-                {3.0, 4.0, 5.0},
-                {6.0, 7.0, 8.0},
-                {9.0, 10.0, 11.0},
-                {4.0, 5.0, 6.0},
-                {10.0, 11.0, 12.0},
-                {5.0, 6.0, 7.0},
-                {11.0, 12.0, 13.0},
-                {6.0, 7.0, 8.0},
-                {12.0, 13.0, 14.0},
-                {7.0, 8.0, 9.0},
-                {13.0, 14.0, 15.0},
-                {8.0, 9.0, 10.0},
-                {14.0, 15.0, 16.0},
-                {9.0, 10.0, 11.0},
-        };
+//        final double[][] data = {
+//                {1.0, 2.0, 3.0},
+//                {4.0, 5.0, 6.0},
+//                {7.0, 8.0, 9.0},
+//                {2.0, 3.0, 4.0},
+//                {5.0, 6.0, 7.0},
+//                {8.0, 9.0, 10.0},
+//                {3.0, 4.0, 5.0},
+//                {6.0, 7.0, 8.0},
+//                {9.0, 10.0, 11.0},
+//                {4.0, 5.0, 6.0},
+//                {10.0, 11.0, 12.0},
+//                {5.0, 6.0, 7.0},
+//                {11.0, 12.0, 13.0},
+//                {6.0, 7.0, 8.0},
+//                {12.0, 13.0, 14.0},
+//                {7.0, 8.0, 9.0},
+//                {13.0, 14.0, 15.0},
+//                {8.0, 9.0, 10.0},
+//                {14.0, 15.0, 16.0},
+//                {9.0, 10.0, 11.0},
+//        };
+
+        List<double[]> data = IntStream.range(0, 10000)
+                .mapToObj(i -> randomVector())
+                .toList();
 
         for (double[] vector : data) {
             Vertex v = new Vertex(vector);
@@ -305,7 +319,7 @@ public class HNSWExample {
         }
 
         System.out.println();
-        for (Vertex v : index.getAllVertex().stream().sorted(HNSWIndex.getVertexComparator(queryVertex)).toList()) {
+        for (Vertex v : index.getAllVertex().stream().sorted(HNSWIndex.getVertexComparator(queryVertex)).limit(similarVertices.size() * 3L).toList()) {
             LOGGER.info("All vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), HNSWIndex.cosineSimilarity(queryVertex, v));
         }
     }
