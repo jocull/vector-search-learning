@@ -85,6 +85,10 @@ class Vertex {
 
     public void setMaxLevel(int level) {
         this.maxLevel = level;
+        hydrateLevel(level);
+    }
+
+    private void hydrateLevel(int level) {
         while (edges.size() <= level) {
             edges.add(new PriorityQueue<>(Comparator.<VertexDistance>comparingDouble(v -> v.distance).reversed()));
         }
@@ -95,6 +99,8 @@ class Vertex {
     }
 
     public void addEdge(int level, Vertex neighbor, double distance) {
+        hydrateLevel(level);
+
         final PriorityQueue<VertexDistance> layerEdges = edges.get(level);
         layerEdges.add(new VertexDistance(neighbor, distance));
 
@@ -167,10 +173,11 @@ class HNSWIndex {
             layers.add(new ArrayList<>());
         }
 
-        // We'll go down no more than one level from the current layer to create connections.
+        // We'll go up and down no more than one level from the current layer to create connections.
         // After that it's a graph from the node we're connected to.
+        final int vertexTopLevel = Math.min(getCurrentMaxLevel(), newVertex.getMaxLevel() + 1);
         final int vertexBottomLevel = Math.max(0, newVertex.getMaxLevel() - 1);
-        for (int currentLevel = newVertex.getMaxLevel(); currentLevel >= vertexBottomLevel; currentLevel--) {
+        for (int currentLevel = vertexTopLevel; currentLevel >= vertexBottomLevel; currentLevel--) {
             final PriorityQueue<VertexDistance> neighbors = new PriorityQueue<>(Comparator.<VertexDistance>comparingDouble(vd -> vd.distance).reversed());
             for (Vertex neighbor : layers.get(currentLevel)) {
                 neighbors.add(new VertexDistance(neighbor, newVector));
@@ -234,34 +241,54 @@ class HNSWIndex {
     }
 
     public List<Vertex> search(double[] queryVector, int k) {
-        final PriorityQueue<VertexDistance> best = new PriorityQueue<>(Comparator.comparingDouble(vd -> vd.distance));
-
+        // To perform the search we need to start at the highest available layer and search for the best initial node
+        VertexDistance bestDistance = null;
         for (int level = getCurrentMaxLevel(); level >= 0; level--) {
-            final List<Vertex> initialCandidates = layers.get(level);
-            final Set<Vertex> visited = new HashSet<>();
-            final PriorityQueue<VertexDistance> candidates = new PriorityQueue<>(Comparator.comparingDouble(vd -> vd.distance));
-
-            for (Vertex start : initialCandidates) {
-                candidates.add(new VertexDistance(start, queryVector));
-            }
-
-            while (!candidates.isEmpty()) {
-                VertexDistance current = candidates.poll();
-                Vertex v = current.vertex;
-                if (visited.contains(v)) continue;
-                visited.add(v);
-                best.add(current);
-
-                for (VertexDistance neighbor : v.getEdges(level)) {
-                    if (!visited.contains(neighbor.vertex)) {
-                        candidates.add(new VertexDistance(neighbor.vertex, queryVector));
+            for (Vertex vertex : layers.get(level)) {
+                if (bestDistance == null) {
+                    bestDistance = new VertexDistance(vertex, queryVector);
+                } else {
+                    VertexDistance currentDistance = new VertexDistance(vertex, queryVector);
+                    if (currentDistance.distance < bestDistance.distance) {
+                        bestDistance = currentDistance;
                     }
                 }
             }
+            if (bestDistance != null) {
+                break;
+            }
         }
 
+        // No nodes in index
+        if (bestDistance == null) {
+            return new ArrayList<>();
+        }
+
+        // Starting from the best distance we were able to find, well traverse neighbors looking for better connections
+        final PriorityQueue<VertexDistance> best = new PriorityQueue<>(Comparator.<VertexDistance>comparingDouble(vd -> vd.distance).reversed());
+        boolean betterFound;
+        do {
+            betterFound = false;
+
+            // Evaluate local edge for the best
+            for (int level = bestDistance.vertex.getMaxLevel(); level >= 0; level--) {
+                for (VertexDistance edge : bestDistance.vertex.getEdges(level)) {
+                    VertexDistance currentDistance = new VertexDistance(edge.vertex, queryVector);
+                    if (currentDistance.distance < bestDistance.distance) {
+                        bestDistance = currentDistance;
+                        betterFound = true;
+
+                        best.add(bestDistance);
+                        while (best.size() > k) {
+                            best.poll();
+                        }
+                    }
+                }
+            }
+        } while (betterFound);
+
         return best.stream()
-                .limit(k)
+                .sorted(Comparator.comparingDouble(vd -> vd.distance))
                 .map(vd -> vd.vertex)
                 .toList();
     }
