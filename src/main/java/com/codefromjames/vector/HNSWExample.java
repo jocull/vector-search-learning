@@ -172,12 +172,20 @@ class HNSWIndex {
     }
 
     private static class VertexDistance {
-        Vertex vertex;
-        double distance;
+        final Vertex vertex;
+        final double distance;
 
         VertexDistance(Vertex v, double d) {
             vertex = v;
             distance = d;
+        }
+
+        @Override
+        public String toString() {
+            return "VertexDistance{" +
+                    "vertex=" + vertex +
+                    ", distance=" + distance +
+                    '}';
         }
     }
 
