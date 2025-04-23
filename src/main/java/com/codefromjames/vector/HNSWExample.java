@@ -9,6 +9,7 @@ import java.util.stream.IntStream;
 
 class Vertex {
     private double[] vector;
+    private final double norm;
     private Map<String, Object> metadata;
     private int maxLevel;
     private List<List<Vertex>> edges;
@@ -19,9 +20,21 @@ class Vertex {
 
     public Vertex(double[] vector, Map<String, Object> metadata) {
         this.vector = vector;
+        this.norm = norm(vector);
         this.metadata = new HashMap<>(metadata);
         this.maxLevel = 0;
         this.edges = new ArrayList<>();
+        for (int i = 0; i <= HNSWIndex.MAX_LEVEL; i++) {
+            edges.add(new ArrayList<>());
+        }
+    }
+
+    private static double norm(double[] vector) {
+        double sum = 0;
+        for (double val : vector) {
+            sum += val * val;
+        }
+        return Math.sqrt(sum);
     }
 
     public void setMaxLevel(int level) {
@@ -29,6 +42,10 @@ class Vertex {
         while (edges.size() <= level) {
             edges.add(new ArrayList<>());
         }
+    }
+
+    public double getNorm() {
+        return norm;
     }
 
     public List<Vertex> getEdges(int level) {
@@ -74,8 +91,9 @@ class Vertex {
 }
 
 class HNSWIndex {
+    static final int MAX_LEVEL = 8;
+
     private static final double LEVEL_PROBABILITY = 0.1;
-    private static final int MAX_LEVEL = 8;
     private static final int M = 5;
 
     private List<Vertex> vertices = new ArrayList<>();
@@ -84,20 +102,20 @@ class HNSWIndex {
 
     public void addVertex(double[] vector, Map<String, Object> metadata) {
         Vertex newVertex = new Vertex(vector, metadata);
-        int level = 0;
-        while (Math.random() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
-            level++;
+        int chosenLevel = 0;
+        while (Math.random() < LEVEL_PROBABILITY && chosenLevel < MAX_LEVEL) {
+            chosenLevel++;
         }
-        newVertex.setMaxLevel(level);
+        newVertex.setMaxLevel(chosenLevel);
 
-        if (level > currentMaxLevel) {
-            currentMaxLevel = level;
-            while (entryPoints.size() <= level) {
+        if (chosenLevel > currentMaxLevel) {
+            currentMaxLevel = chosenLevel;
+            while (entryPoints.size() <= chosenLevel) {
                 entryPoints.add(new ArrayList<>());
             }
         }
 
-        for (int currentLevel = newVertex.getMaxLevel(); currentLevel >= 0; currentLevel--) {
+        for (int currentLevel = 0; currentLevel <= chosenLevel; currentLevel++) {
             List<Vertex> neighbors = greedySearch(newVertex, currentLevel);
             neighbors.sort(Comparator.comparingDouble(v -> cosineDistance(newVertex, v)));
             if (neighbors.size() > M) {
@@ -108,10 +126,11 @@ class HNSWIndex {
                 newVertex.addEdge(neighbor, currentLevel);
                 neighbor.addEdge(newVertex, currentLevel);
             }
+        }
 
-            if (currentLevel == newVertex.getMaxLevel()) {
-                entryPoints.get(currentLevel).add(newVertex);
-            }
+        // Update entry points for the new level
+        if (chosenLevel == entryPoints.size() - 1) {
+            entryPoints.get(chosenLevel).add(newVertex);
         }
 
         vertices.add(newVertex);
@@ -119,30 +138,60 @@ class HNSWIndex {
 
     private List<Vertex> greedySearch(Vertex target, int level) {
         Set<Vertex> visited = new HashSet<>();
-        PriorityQueue<VertexDistance> candidates = new PriorityQueue<>(Comparator.comparingDouble(vd -> vd.distance));
+        // Max-heap to track the M farthest candidates (so we can replace them with closer ones)
+        PriorityQueue<Vertex> candidates = new PriorityQueue<>(
+                M,
+                Comparator.<Vertex>comparingDouble(v -> cosineDistance(target, v)).reversed()
+        );
 
-        for (Vertex entry : entryPoints.get(level)) {
-            candidates.add(new VertexDistance(entry, cosineDistance(target, entry)));
+        Vertex currentEntryPoint = getEntryPoint(level);
+        if (currentEntryPoint == null) {
+            return new ArrayList<>();
         }
 
-        List<Vertex> best = new ArrayList<>();
-        while (!candidates.isEmpty()) {
-            VertexDistance current = candidates.poll();
-            Vertex v = current.vertex;
-            if (visited.contains(v)) continue;
-            visited.add(v);
-            best.add(v);
+        Vertex current = currentEntryPoint;
+        visited.add(current);
+        updateCandidates(candidates, current, target);
 
-            for (Vertex neighbor : v.getEdges(level)) {
-                if (!visited.contains(neighbor)) {
-                    double dist = cosineDistance(target, neighbor);
-                    candidates.add(new VertexDistance(neighbor, dist));
-                }
+        while (true) {
+            Vertex bestNeighbor = findBestNeighbor(target, current, level, visited);
+            if (bestNeighbor == null) {
+                break;
+            }
+
+            visited.add(bestNeighbor);
+            updateCandidates(candidates, bestNeighbor, target);
+
+            // Early exit if the next neighbor is worse than the farthest in the candidates
+            if (candidates.size() == M && cosineDistance(target, bestNeighbor) > cosineDistance(target, candidates.peek())) {
+                break;
+            }
+
+            current = bestNeighbor;
+        }
+
+        // Convert the max-heap to a list sorted by closest first
+        List<Vertex> result = new ArrayList<>(candidates);
+        Collections.reverse(result); // Reverse to get closest first
+        return result.subList(0, Math.min(result.size(), M));
+    }
+
+    private Vertex getEntryPoint(int level) {
+        List<Vertex> entryList = entryPoints.get(level);
+        return entryList.isEmpty() ? null : entryList.get(0);
+    }
+
+    private void updateCandidates(PriorityQueue<Vertex> candidates, Vertex vertex, Vertex target) {
+        double newDist = cosineDistance(target, vertex);
+        if (candidates.size() < M) {
+            candidates.add(vertex);
+        } else {
+            Vertex farthest = candidates.peek();
+            if (newDist < cosineDistance(target, farthest)) {
+                candidates.poll();
+                candidates.add(vertex);
             }
         }
-
-        best.sort(Comparator.comparingDouble(v -> cosineDistance(target, v)));
-        return best.subList(0, Math.min(best.size(), M));
     }
 
     static double cosineSimilarity(Vertex v1, Vertex v2) {
@@ -150,8 +199,8 @@ class HNSWIndex {
         for (int i = 0; i < v1.getVector().length; i++) {
             dotProduct += v1.getVector()[i] * v2.getVector()[i];
         }
-        double norm1 = norm(v1.getVector());
-        double norm2 = norm(v2.getVector());
+        double norm1 = v1.getNorm();
+        double norm2 = v2.getNorm();
         return dotProduct / (norm1 * norm2);
     }
 
@@ -159,12 +208,12 @@ class HNSWIndex {
         return 1 - cosineSimilarity(v1, v2);
     }
 
-    private static double norm(double[] vector) {
+    private static double dotProduct(double[] v1, double[] v2) {
         double sum = 0;
-        for (double v : vector) {
-            sum += v * v;
+        for (int i = 0; i < v1.length; i++) {
+            sum += v1[i] * v2[i];
         }
-        return Math.sqrt(sum);
+        return sum;
     }
 
     public List<Vertex> getAllVertex() {
@@ -291,20 +340,20 @@ class HNSWIndex {
         return results.subList(0, Math.min(results.size(), k));
     }
 
-    private Vertex findBestNeighbor(
-            Vertex queryVertex,
-            Vertex current,
-            int level,
-            Set<Vertex> visited
-    ) {
+    private Vertex findBestNeighbor(Vertex target, Vertex current, int level, Set<Vertex> visited) {
         Vertex bestNeighbor = null;
         double minDistance = Double.MAX_VALUE;
+        double[] targetVector = target.getVector();
+        double targetNorm = target.getNorm();
 
         for (Vertex neighbor : current.getEdges(level)) {
             if (!visited.contains(neighbor)) {
-                double dist = cosineDistance(queryVertex, neighbor);
-                if (dist < minDistance) {
-                    minDistance = dist;
+                double[] neighborVector = neighbor.getVector();
+                double neighborNorm = neighbor.getNorm();
+                double dot = dotProduct(targetVector, neighborVector);
+                double distance = 1 - (dot / (targetNorm * neighborNorm));
+                if (distance < minDistance) {
+                    minDistance = distance;
                     bestNeighbor = neighbor;
                 }
             }
