@@ -245,13 +245,10 @@ class HNSWIndex {
         VertexDistance bestDistance = null;
         for (int level = getCurrentMaxLevel(); level >= 0; level--) {
             for (Vertex vertex : layers.get(level)) {
-                if (bestDistance == null) {
-                    bestDistance = new VertexDistance(vertex, queryVector);
-                } else {
-                    VertexDistance currentDistance = new VertexDistance(vertex, queryVector);
-                    if (currentDistance.distance < bestDistance.distance) {
-                        bestDistance = currentDistance;
-                    }
+                final VertexDistance currentDistance = new VertexDistance(vertex, queryVector);
+                if (bestDistance == null
+                        || currentDistance.distance < bestDistance.distance) {
+                    bestDistance = currentDistance;
                 }
             }
             if (bestDistance != null) {
