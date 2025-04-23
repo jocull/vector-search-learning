@@ -226,47 +226,117 @@ class HNSWIndex {
         Vertex queryVertex = new Vertex(queryVector, new HashMap<>());
         List<Vertex> candidates = new ArrayList<>();
 
+        Vertex currentEntryPoint = entryPoints.get(currentMaxLevel).get(0); // Start at top layer's entry point
+
         for (int level = currentMaxLevel; level >= 0; level--) {
-            List<Vertex> initialCandidates = entryPoints.get(level);
-            List<Vertex> levelCandidates = greedySearchForSearch(queryVertex, level, initialCandidates);
+            List<Vertex> levelCandidates = greedySearchForSearch(queryVertex, level, currentEntryPoint, k);
             candidates.addAll(levelCandidates);
+
+            // Update entry point for next layer to closest node in current layer's results
+            if (!levelCandidates.isEmpty()) {
+                currentEntryPoint = levelCandidates.get(0); // Closest node becomes next entry point
+            }
         }
 
+        // Final sort and return top-k
         candidates.sort(getVertexComparator(queryVertex));
         return candidates.subList(0, Math.min(candidates.size(), k));
     }
 
-    static Comparator<Vertex> getVertexComparator(Vertex queryVertex) {
-        return Comparator.comparingDouble(v -> cosineDistance(v, queryVertex));
-    }
-
-    private List<Vertex> greedySearchForSearch(Vertex queryVertex, int level, List<Vertex> initialCandidates) {
+    private List<Vertex> greedySearchForSearch(
+            Vertex queryVertex,
+            int level,
+            Vertex entryPoint,
+            int k
+    ) {
         Set<Vertex> visited = new HashSet<>();
-        PriorityQueue<VertexDistance> candidates = new PriorityQueue<>(Comparator.comparingDouble(vd -> vd.distance));
+        // Max-heap to track top k candidates (stores largest distances first)
+        PriorityQueue<Vertex> candidateHeap = new PriorityQueue<>(
+                (a, b) -> {
+                    double distA = cosineDistance(queryVertex, a);
+                    double distB = cosineDistance(queryVertex, b);
+                    return Double.compare(distB, distA); // Reverse order for max-heap
+                }
+        );
 
-        for (Vertex start : initialCandidates) {
-            candidates.add(new VertexDistance(start, cosineDistance(queryVertex, start)));
+        Vertex current = entryPoint;
+        visited.add(current);
+        updateCandidateHeap(candidateHeap, queryVertex, current, k);
+
+        while (true) {
+            Vertex bestNeighbor = findBestNeighbor(queryVertex, current, level, visited);
+
+            if (bestNeighbor == null) {
+                break; // No better neighbor found
+            }
+
+            visited.add(bestNeighbor);
+            updateCandidateHeap(candidateHeap, queryVertex, bestNeighbor, k);
+
+            // Early stopping: if new neighbor is worse than current worst candidate
+            if (candidateHeap.size() == k &&
+                    cosineDistance(queryVertex, bestNeighbor) > cosineDistance(queryVertex, candidateHeap.peek())) {
+                break;
+            }
+
+            current = bestNeighbor;
         }
 
-        List<Vertex> best = new ArrayList<>();
-        while (!candidates.isEmpty()) {
-            VertexDistance current = candidates.poll();
-            Vertex v = current.vertex;
-            if (visited.contains(v)) continue;
-            visited.add(v);
-            best.add(v);
+        // Convert heap to sorted list (ascending order)
+        List<Vertex> results = new ArrayList<>();
+        while (!candidateHeap.isEmpty()) {
+            results.add(candidateHeap.poll());
+        }
+        Collections.reverse(results); // Reverse to get ascending order
+        return results.subList(0, Math.min(results.size(), k));
+    }
 
-            for (Vertex neighbor : v.getEdges(level)) {
-                if (!visited.contains(neighbor)) {
-                    double dist = cosineDistance(queryVertex, neighbor);
-                    candidates.add(new VertexDistance(neighbor, dist));
+    private Vertex findBestNeighbor(
+            Vertex queryVertex,
+            Vertex current,
+            int level,
+            Set<Vertex> visited
+    ) {
+        Vertex bestNeighbor = null;
+        double minDistance = Double.MAX_VALUE;
+
+        for (Vertex neighbor : current.getEdges(level)) {
+            if (!visited.contains(neighbor)) {
+                double dist = cosineDistance(queryVertex, neighbor);
+                if (dist < minDistance) {
+                    minDistance = dist;
+                    bestNeighbor = neighbor;
                 }
             }
         }
 
-        best.sort(Comparator.comparingDouble(v -> cosineDistance(queryVertex, v)));
-        return best;
+        return bestNeighbor;
     }
+
+    private void updateCandidateHeap(
+            PriorityQueue<Vertex> heap,
+            Vertex queryVertex,
+            Vertex vertex,
+            int k
+    ) {
+        double currentDist = cosineDistance(vertex, queryVertex);
+
+        if (heap.size() < k) {
+            heap.add(vertex);
+        } else {
+            // Replace only if better than the worst candidate
+            Vertex worstCandidate = heap.peek();
+            if (currentDist < cosineDistance(worstCandidate, queryVertex)) {
+                heap.poll();
+                heap.add(vertex);
+            }
+        }
+    }
+
+    static Comparator<Vertex> getVertexComparator(final Vertex queryVertex) {
+        return Comparator.comparingDouble(v -> cosineDistance(v, queryVertex));
+    }
+
 }
 
 public class HNSWExample {
