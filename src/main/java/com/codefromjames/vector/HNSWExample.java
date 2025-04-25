@@ -65,7 +65,7 @@ class VertexDistance {
 }
 
 class Vertex {
-    private static final int MAX_EDGES = 8;
+    private static final int MAX_EDGES = 32;
 
     private final double[] vector;
     private final Map<String, Object> metadata;
@@ -98,15 +98,15 @@ class Vertex {
         return edges.get(level);
     }
 
-    public void addEdge(int level, Vertex neighbor, double distance) {
+    public void addEdge(int level, VertexDistance neighbor) {
         hydrateLevel(level);
 
         final PriorityQueue<VertexDistance> layerEdges = edges.get(level);
-        layerEdges.add(new VertexDistance(neighbor, distance));
-
-        while (layerEdges.size() > MAX_EDGES) {
+        if (layerEdges.size() > MAX_EDGES
+                && layerEdges.peek().distance > neighbor.distance) {
             layerEdges.poll();
         }
+        layerEdges.add(neighbor);
     }
 
     public void removeEdge(int level, Vertex neighbor) {
@@ -140,6 +140,23 @@ class Vertex {
         return metadata.get(id);
     }
 
+    public Vertex findBestNeighbor(double[] targetVector, int level, Set<Vertex> visited) {
+        Vertex bestNeighbor = null;
+        double minDistance = CosineDistanceUtils.cosineDistance(this.getVector(), targetVector);
+        double distance;
+        for (VertexDistance neighbor : this.getEdges(level)) {
+            if (visited.contains(neighbor.vertex)) {
+                continue;
+            }
+            distance = CosineDistanceUtils.cosineDistance(neighbor.vertex.getVector(), targetVector);
+            if (distance < minDistance) {
+                minDistance = distance;
+                bestNeighbor = neighbor.vertex;
+            }
+        }
+        return bestNeighbor;
+    }
+
     @Override
     public String toString() {
         return "Vertex{" +
@@ -167,30 +184,19 @@ class HNSWIndex {
         while (Math.random() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
             level++;
         }
-        newVertex.setMaxLevel(level);
 
+        newVertex.setMaxLevel(level);
         while (getCurrentMaxLevel() <= level) {
             layers.add(new ArrayList<>());
         }
 
-        // We'll go up and down no more than one level from the current layer to create connections.
-        // After that it's a graph from the node we're connected to.
-        final int vertexTopLevel = Math.min(getCurrentMaxLevel(), newVertex.getMaxLevel() + 1);
-        final int vertexBottomLevel = Math.max(0, newVertex.getMaxLevel() - 1);
-        for (int currentLevel = vertexTopLevel; currentLevel >= vertexBottomLevel; currentLevel--) {
-            final PriorityQueue<VertexDistance> neighbors = new PriorityQueue<>(Comparator.<VertexDistance>comparingDouble(vd -> vd.distance).reversed());
-            for (Vertex neighbor : layers.get(currentLevel)) {
-                neighbors.add(new VertexDistance(neighbor, newVector));
-                while (neighbors.size() > M) {
-                    neighbors.poll(); // Remove the worst match
-                }
-            }
-
+        // Create links to neighbors in each layer down from here
+        final Set<Vertex> visitedNeighbors = new HashSet<>();
+        for (int currentLevel = level; currentLevel >= 0; currentLevel--) {
+            final List<VertexDistance> neighbors = findBestNeighborsInLayer(newVector, currentLevel, visitedNeighbors);
             for (VertexDistance vdNeighbor : neighbors) {
-                Vertex neighbor = vdNeighbor.vertex;
-                double distance = vdNeighbor.distance;
-                newVertex.addEdge(currentLevel, neighbor, distance);
-                neighbor.addEdge(currentLevel, newVertex, distance);
+                newVertex.addEdge(currentLevel, vdNeighbor);
+                vdNeighbor.vertex.addEdge(currentLevel, new VertexDistance(newVertex, vdNeighbor.distance));
             }
 
             // Insert at the level we belong in, but not others
@@ -198,6 +204,38 @@ class HNSWIndex {
                 layers.get(currentLevel).add(newVertex);
             }
         }
+    }
+
+    private List<VertexDistance> findBestNeighborsInLayer(double[] newVector, int currentLevel, Set<Vertex> visitedNeighbors) {
+        final PriorityQueue<VertexDistance> neighbors = new PriorityQueue<>(Comparator.<VertexDistance>comparingDouble(vd -> vd.distance).reversed());
+        Vertex bestNeighbor = layers.get(currentLevel).stream().findFirst().orElse(null);
+
+        boolean betterMatch;
+        do {
+            betterMatch = false;
+            if (bestNeighbor == null) {
+                break;
+            }
+            visitedNeighbors.add(bestNeighbor);
+            final VertexDistance current = new VertexDistance(bestNeighbor, newVector);
+            if (!neighbors.isEmpty()) {
+                if (neighbors.peek().distance > current.distance) {
+                    betterMatch = true;
+                    neighbors.add(current);
+                    if (neighbors.size() >= M) {
+                        neighbors.poll(); // Remove the worst match
+                    }
+                }
+            } else {
+                betterMatch = true;
+                neighbors.add(current);
+            }
+            bestNeighbor = bestNeighbor.findBestNeighbor(newVector, currentLevel, visitedNeighbors);
+        } while (betterMatch);
+
+        final List<VertexDistance> result = new ArrayList<>(neighbors);
+        result.sort(Comparator.comparingDouble(vd -> vd.distance));
+        return result;
     }
 
     public List<Vertex> getAllVertex() {
@@ -242,47 +280,23 @@ class HNSWIndex {
 
     public List<Vertex> search(double[] queryVector, int k) {
         // To perform the search we need to start at the highest available layer and search for the best initial node
-        VertexDistance bestDistance = null;
+        final PriorityQueue<VertexDistance> best = new PriorityQueue<>(Comparator.<VertexDistance>comparingDouble(vd -> vd.distance).reversed());
+        final Set<Vertex> visitedNeighbors = new HashSet<>();
         for (int level = getCurrentMaxLevel(); level >= 0; level--) {
-            for (Vertex vertex : layers.get(level)) {
-                final VertexDistance currentDistance = new VertexDistance(vertex, queryVector);
-                if (bestDistance == null
-                        || currentDistance.distance < bestDistance.distance) {
-                    bestDistance = currentDistance;
+            final List<VertexDistance> bestNeighborsInLayer = findBestNeighborsInLayer(queryVector, level, visitedNeighbors);
+            for (VertexDistance neighbor : bestNeighborsInLayer) {
+                if (k > 0) {
+                    if (best.size() > k
+                            && best.peek().distance > neighbor.distance) {
+                        best.poll();
+                    }
                 }
+                best.add(neighbor);
             }
-            if (bestDistance != null) {
+            if (best.size() >= k) {
                 break;
             }
         }
-
-        // No nodes in index
-        if (bestDistance == null) {
-            return new ArrayList<>();
-        }
-
-        // Starting from the best distance we were able to find, well traverse neighbors looking for better connections
-        final PriorityQueue<VertexDistance> best = new PriorityQueue<>(Comparator.<VertexDistance>comparingDouble(vd -> vd.distance).reversed());
-        boolean betterFound;
-        do {
-            betterFound = false;
-
-            // Evaluate local edge for the best
-            for (int level = bestDistance.vertex.getMaxLevel(); level >= 0; level--) {
-                for (VertexDistance edge : bestDistance.vertex.getEdges(level)) {
-                    VertexDistance currentDistance = new VertexDistance(edge.vertex, queryVector);
-                    if (currentDistance.distance < bestDistance.distance) {
-                        bestDistance = currentDistance;
-                        betterFound = true;
-
-                        best.add(bestDistance);
-                        while (best.size() > k) {
-                            best.poll();
-                        }
-                    }
-                }
-            }
-        } while (betterFound);
 
         return best.stream()
                 .sorted(Comparator.comparingDouble(vd -> vd.distance))
