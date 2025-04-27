@@ -276,6 +276,11 @@ class HNSWIndex {
                 vdNeighbor.vertex.addEdge(currentLevel, new VertexDistance(newVertex, vdNeighbor.distance));
             }
 
+            // Insert the new node into the level it belongs to
+            if (currentLevel == newVertex.getMaxLevel()) {
+                layers.get(currentLevel).add(newVertex);
+            }
+
             propagateBest = best;
         }
     }
