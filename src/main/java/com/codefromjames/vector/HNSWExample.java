@@ -78,7 +78,7 @@ class VertexDistance {
 }
 
 class Vertex {
-    private static final int ML = 32;
+    static final int ML = 32;
 
     private final double[] vector;
     private final Map<String, Object> metadata;
@@ -224,57 +224,59 @@ class HNSWIndex {
             layers.add(new ArrayList<>());
         }
 
-        Vertex entryPoint = null;
-        for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
-            if (!layers.get(currentLevel).isEmpty()) {
-                entryPoint = layers.get(currentLevel).get(0);
-                break;
-            }
-        }
-        if (entryPoint == null) {
-            // Special case: our first node
-            layers.get(level).add(newVertex);
-            return;
-        }
-
-        final Set<Vertex> visited = new HashSet<>();
-        final VertexMinHeap candidates = new VertexMinHeap();
-        final List<VertexMaxHeap> bestByLayer = new ArrayList<>();
-        while (bestByLayer.size() < layers.size()) {
-            bestByLayer.add(new VertexMaxHeap());
-        }
-
-        candidates.add(new VertexDistance(entryPoint, newVector));
-        while (!candidates.isEmpty()) {
-            final VertexDistance vd = candidates.poll();
-            final Vertex v = vd.vertex;
-
-            if (visited.contains(v)) {
+        VertexMaxHeap propagateBest = null;
+        for (int currentLevel = level; currentLevel >= 0; currentLevel--) {
+            // If there are no nodes in this layer, then it's the first entry. Just add it.
+            if (layers.get(currentLevel).isEmpty()) {
+                layers.get(currentLevel).add(newVertex);
                 continue;
             }
-            bestByLayer.get(v.getMaxLevel()).add(vd);
-            visited.add(v);
 
-            // Run each edge to ground looking for candidates
-            for (int nodeLevel = v.getMaxLevel(); nodeLevel >= 0; nodeLevel--) {
-                for (VertexDistance edge : v.getEdges(nodeLevel)) {
+            final Set<Vertex> visited = new HashSet<>();
+            final VertexMinHeap candidates = new VertexMinHeap();
+            final VertexMaxHeap best = new VertexMaxHeap();
+            if (propagateBest != null && !propagateBest.isEmpty()) {
+                // Find the best neighbors in this level, searching from the previous level's matches
+                candidates.addAll(propagateBest);
+            } else {
+                // Find the best neighbors in this level, searching from the entry point
+                candidates.add(new VertexDistance(layers.get(currentLevel).get(0), newVector));
+            }
+
+            while (!candidates.isEmpty()) {
+                VertexDistance current = candidates.poll();
+                if (visited.contains(current.vertex)) {
+                    continue;
+                }
+
+                visited.add(current.vertex);
+                if (best.isEmpty()
+                        || best.size() < Vertex.ML
+                        || best.peek().distance > current.distance) {
+                    best.add(current);
+                }
+
+                for (VertexDistance edge : current.vertex.getEdges(currentLevel)) {
                     if (visited.contains(edge.vertex)) {
                         continue;
                     }
 
-                    candidates.add(edge);
-                    bestByLayer.get(nodeLevel).add(vd);
-                    visited.add(edge.vertex);
+                    if (best.isEmpty()
+                            || best.size() < Vertex.ML
+                            || best.peek().distance > edge.distance) {
+                        best.add(edge);
+                        candidates.add(edge);
+                        visited.add(edge.vertex);
+                    }
                 }
             }
-        }
 
-        for (int bestLevel = bestByLayer.size() - 1; bestLevel >= 0; bestLevel--) {
-            final VertexMaxHeap best = bestByLayer.get(bestLevel);
             for (VertexDistance vdNeighbor : best) {
-                newVertex.addEdge(bestLevel, vdNeighbor);
-                vdNeighbor.vertex.addEdge(bestLevel, new VertexDistance(newVertex, vdNeighbor.distance));
+                newVertex.addEdge(currentLevel, vdNeighbor);
+                vdNeighbor.vertex.addEdge(currentLevel, new VertexDistance(newVertex, vdNeighbor.distance));
             }
+
+            propagateBest = best;
         }
     }
 
