@@ -113,6 +113,12 @@ class Vertex {
         }
 
         final PriorityQueue<VertexDistance> layerEdges = edges.get(level);
+        for (VertexDistance layerEdge : layerEdges) {
+            if (layerEdge.vertex == neighbor.vertex) {
+                // Exists already
+                return;
+            }
+        }
         if (layerEdges.size() > ML
                 && layerEdges.peek().distance > neighbor.distance) {
             layerEdges.poll();
