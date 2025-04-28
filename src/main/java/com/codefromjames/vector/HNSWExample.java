@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.lang.Math;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 class CosineDistanceUtils {
@@ -209,6 +210,7 @@ class VertexMaxHeap extends PriorityQueue<VertexDistance> {
 }
 
 class HNSWIndex {
+    static final Random RANDOM = new Random(261707535563309L); // Nice distribution off a recent run
     private static final double LEVEL_PROBABILITY = 0.1;
     private static final int MAX_LEVEL = 8;
     private static final int M = 5;
@@ -222,7 +224,7 @@ class HNSWIndex {
     public void addVertex(double[] newVector, Map<String, Object> metadata) {
         final Vertex newVertex = new Vertex(newVector, metadata);
         int level = 0;
-        while (Math.random() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
+        while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
             level++;
         }
 
@@ -293,6 +295,10 @@ class HNSWIndex {
         }
     }
 
+    public List<List<Vertex>> getAllLayers() {
+        return List.copyOf(layers);
+    }
+
     public List<Vertex> getAllVertex() {
         return layers.stream()
                 .flatMap(Collection::stream)
@@ -314,14 +320,13 @@ class HNSWIndex {
 
 public class HNSWExample {
     static final Logger LOGGER = LoggerFactory.getLogger(Math.class);
-    static final Random RANDOM = new Random();
 
-    static double[] randomVector() {
-        return new double[]{
-                RANDOM.nextDouble(-1000, 1000),
-                RANDOM.nextDouble(-1000, 1000),
-                RANDOM.nextDouble(-1000, 1000),
-        };
+    static double[] randomVector(int width) {
+        final double[] vector = new double[width];
+        for (int i = 0; i < vector.length; i++) {
+            vector[i] = HNSWIndex.RANDOM.nextDouble(-1000, 1000);
+        }
+        return vector;
     }
 
     public static void main(String[] args) {
@@ -350,17 +355,44 @@ public class HNSWExample {
 //                {9.0, 10.0, 11.0},
 //        };
 
-        List<double[]> data = IntStream.range(0, 10000)
-                .mapToObj(i -> randomVector())
+        final int vectorSize = 3;
+        LOGGER.info("Vectors generating... vector size = {}", vectorSize);
+        final List<double[]> data = IntStream.range(0, 10000)
+                .mapToObj(i -> randomVector(vectorSize))
                 .toList();
 
-        for (double[] vector : data) {
-            Vertex v = new Vertex(vector);
-            index.addVertex(vector, Map.of());
+        LOGGER.info("...done. Layers generating...");
+        for (int i = 0; i < data.size(); i++) {
+            final double[] vector = data.get(i);
+            index.addVertex(vector, Map.of("id", i));
         }
 
-        double[] queryVector = {5.0, 6.0, 7.0};
-        Vertex queryVertex = new Vertex(queryVector);
+        LOGGER.info("...done. Exploring structure:");
+        final List<List<Vertex>> layers = index.getAllLayers();
+        for (int oLevel = layers.size() - 1; oLevel >= 0; oLevel--) { // For each layer...
+            final List<Vertex> vertices = layers.get(oLevel);
+            LOGGER.info("Layer {} begins with {} nodes...", oLevel, vertices.size());
+            for (int iLevel = layers.size() - 1; iLevel >= oLevel; iLevel--) { // We are going to reiterate from the top layer
+                for (Vertex vertex : layers.get(iLevel)) {
+                    for (int vLevel = layers.size() - 1; vLevel >= oLevel; vLevel--) { // So that we can look at the stack that vertex has walked down for edges
+                        if (vertex.getMaxLevel() >= vLevel) {
+                            final double min = vertex.getEdges(vLevel).stream().map(vd -> vd.distance).min(Double::compare).orElse(Double.NaN);
+                            final double max = vertex.getEdges(vLevel).stream().map(vd -> vd.distance).max(Double::compare).orElse(Double.NaN);
+                            final String idRange = vertex.getEdges(vLevel).stream()
+                                    .sorted(Comparator.comparingDouble(vd -> vd.distance))
+                                    .map(vd -> vd.vertex.getMetadata("id").toString())
+                                    .collect(Collectors.joining(","));
+                            LOGGER.info("   Node: {} @ {}, {} - {} edges {} to {} : {}", vertex.getMetadata("id"), vLevel, vertex.getVector(), vertex.getEdges(vLevel).size(), min, max, idRange);
+                        }
+                    }
+                }
+            }
+            LOGGER.info("Layer {} ends with {} nodes...", oLevel, vertices.size());
+        }
+        LOGGER.info("Structure exploration ends.");
+
+        final double[] queryVector = {5.0, 6.0, 7.0};
+        final Vertex queryVertex = new Vertex(queryVector);
         LOGGER.info("Searching vertex: {}, Metadata: {}", Arrays.toString(queryVertex.getVector()), queryVertex.getMetadata("id"));
 
         System.out.println();
