@@ -253,7 +253,7 @@ class HNSWIndex {
             }
 
             while (!candidates.isEmpty()) {
-                VertexDistance current = candidates.poll();
+                final VertexDistance current = candidates.poll();
                 if (visited.contains(current.vertex)) {
                     continue;
                 }
@@ -314,7 +314,57 @@ class HNSWIndex {
     }
 
     public List<Vertex> search(double[] queryVector, int k) {
-        throw new UnsupportedOperationException();
+        final VertexMaxHeap best = new VertexMaxHeap();
+        for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+            if (layers.get(currentLevel).isEmpty()) {
+                continue;
+            }
+            final VertexMinHeap candidates = new VertexMinHeap();
+            // Carry over best from the last layer rather than starting over
+            candidates.addAll(best);
+            if (candidates.isEmpty()) {
+                // Start at the entry point of this layer if there was nothing to carry
+                candidates.add(new VertexDistance(layers.get(currentLevel).get(0), queryVector));
+            }
+
+            // Find the best neighbors in this level, searching from the entry point
+            final Set<Vertex> visited = new HashSet<>();
+            while (!candidates.isEmpty()) {
+                final VertexDistance current = candidates.poll();
+                if (visited.contains(current.vertex)) {
+                    continue;
+                }
+
+                visited.add(current.vertex);
+                if (best.isEmpty()
+                        || best.size() < k
+                        || best.peek().distance > current.distance) {
+                    best.addAndTrim(current, k);
+                }
+
+                for (VertexDistance edge : current.vertex.getEdges(currentLevel)) {
+                    if (visited.contains(edge.vertex)) {
+                        continue;
+                    }
+
+                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVector);
+                    if (best.isEmpty()
+                            || best.size() < k
+                            || best.peek().distance > currentEdge.distance) {
+                        best.addAndTrim(currentEdge, k);
+                        candidates.add(currentEdge);
+                        visited.add(currentEdge.vertex);
+                    }
+                }
+            }
+        }
+
+        final List<Vertex> result = new ArrayList<>(best.size());
+        while (!best.isEmpty()) {
+            result.add(best.poll().vertex);
+        }
+        Collections.reverse(result);
+        return result;
     }
 }
 
@@ -396,18 +446,33 @@ public class HNSWExample {
         LOGGER.info("Searching vertex: {}, Metadata: {}", Arrays.toString(queryVertex.getVector()), queryVertex.getMetadata("id"));
 
         System.out.println();
-        final List<Vertex> similarVertices = index.search(queryVector, 5);
-        for (Vertex v : similarVertices) {
-            LOGGER.info("Similar vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+        LOGGER.info("All vertex search begins...");
+        for (int oLevel = layers.size() - 1; oLevel >= 0; oLevel--) { // For each layer...;
+            final List<Vertex> vertices = layers.get(oLevel).stream()
+                    .sorted(Comparator.comparingDouble(v -> CosineDistanceUtils.cosineSimilarity(queryVector, v.getVector())))
+                    .toList();
+            LOGGER.info("Layer {} begins with {} nodes...", oLevel, vertices.size());
+            for (Vertex v : vertices) {
+                LOGGER.info("    - Node: {} @ {}, {} : {}", v.getMetadata("id"), oLevel, Arrays.toString(v.getVector()), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+            }
+            LOGGER.info("Layer {} ends with {} nodes...", oLevel, vertices.size());
         }
+
+        final int topK = 5;
 
         System.out.println();
         final List<Vertex> allVertices = index.getAllVertex().stream()
                 .sorted(Comparator.comparingDouble(v1 -> CosineDistanceUtils.cosineDistance(v1, queryVertex)))
-                .limit(similarVertices.size() * 3L)
+                .limit(topK * 3L)
                 .toList();
         for (Vertex v : allVertices) {
-            LOGGER.info("All vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+            LOGGER.info("All vertex: {}, Metadata: {} @ {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+        }
+
+        System.out.println();
+        final List<Vertex> similarVertices = index.search(queryVector, topK);
+        for (Vertex v : similarVertices) {
+            LOGGER.info("Similar vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
         }
     }
 }
