@@ -78,7 +78,7 @@ class VertexDistance {
 }
 
 class Vertex {
-    static final int ML = 8;
+    static final int ML = 16;
 
     private final double[] vector;
     private final Map<String, Object> metadata;
@@ -493,7 +493,7 @@ public class HNSWExample {
             LOGGER.info("Layer {} ends with {} nodes...", oLevel, vertices.size());
         }
 
-        final int topK = 10;
+        final int topK = 5;
 
         System.out.println();
         final List<Vertex> allVertices = index.getAllVertex().stream()
