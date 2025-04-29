@@ -152,6 +152,7 @@ class Vertex {
                 "vector=" + Arrays.toString(vector) +
                 ", metadata=" + metadata +
                 ", maxLevel=" + maxLevel +
+                ", edges=[" + edges.stream().map(x -> Integer.toString(x.size())).collect(Collectors.joining(",")) + ']' +
                 '}';
     }
 }
@@ -227,7 +228,6 @@ class HNSWIndex {
     static final Random RANDOM = new Random(261707535563309L); // Nice distribution off a recent run
     private static final double LEVEL_PROBABILITY = 0.1;
     private static final int MAX_LEVEL = 8;
-    private static final int M = 5;
 
     private final List<List<Vertex>> layers = new ArrayList<>();
 
