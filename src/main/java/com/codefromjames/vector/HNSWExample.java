@@ -231,8 +231,8 @@ class HNSWIndex {
     private static final Logger LOGGER = LoggerFactory.getLogger(HNSWIndex.class);
 
     static final Random RANDOM = new Random(261707535563309L); // Nice distribution off a recent run
-    private static final double LEVEL_PROBABILITY = 0.1;
-    private static final int MAX_LEVEL = 8;
+    private static final double LEVEL_PROBABILITY = 0.5;
+    private static final int MAX_LEVEL = 16;
 
     private final List<List<Vertex>> layers = new ArrayList<>();
 
@@ -411,7 +411,7 @@ public class HNSWExample {
 
         final int vectorSize = 10;
         LOGGER.info("Vectors generating... vector size = {}", vectorSize);
-        final List<double[]> data = IntStream.range(0, 1000)
+        final List<double[]> data = IntStream.range(0, 1_000_000)
                 .mapToObj(i -> randomVector(vectorSize))
                 .toList();
 
