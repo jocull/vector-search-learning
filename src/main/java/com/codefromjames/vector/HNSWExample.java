@@ -493,7 +493,7 @@ public class HNSWExample {
             LOGGER.info("Layer {} ends with {} nodes...", oLevel, vertices.size());
         }
 
-        final int topK = 5;
+        final int topK = 10;
 
         System.out.println();
         final List<Vertex> allVertices = index.getAllVertex().stream()
