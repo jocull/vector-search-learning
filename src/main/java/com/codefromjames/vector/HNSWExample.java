@@ -164,6 +164,11 @@ class VertexMinHeap extends PriorityQueue<VertexDistance> {
     public VertexMinHeap() {
         super(COMPARATOR);
     }
+
+    public VertexMinHeap(Collection<? extends VertexDistance> c) {
+        this();
+        addAll(c);
+    }
 }
 
 class VertexMaxHeap extends PriorityQueue<VertexDistance> {
@@ -339,7 +344,7 @@ class HNSWIndex {
             if (candidates.isEmpty()) {
                 // Start at the entry point of this layer if there was nothing to carry
                 candidates.add(new VertexDistance(layers.get(currentLevel).get(0), queryVector));
-                LOGGER.debug("Layer {} entry candidate: {}", currentLevel, candidates.peek());
+                LOGGER.debug("[{}] Entry candidate: {} @ {}", currentLevel, candidates.peek().vertex.getMetadata("id"), candidates.peek().distance);
             }
 
             // Find the best neighbors in this level, searching from the entry point
@@ -351,14 +356,13 @@ class HNSWIndex {
                 }
 
                 visited.add(current.vertex);
-                LOGGER.debug("{} Visited vertex: {}", current.vertex.getMetadata("id"), current);
+                LOGGER.debug("[{}] {} Visited vertex @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance);
                 if (best.isEmpty()
                         || best.size() < k
                         || best.peek().distance > current.distance) {
                     if (!best.contains(current.vertex)) {
                         best.addAndTrim(current, k);
-                        LOGGER.debug("{} Vertex is best: {}", current.vertex.getMetadata("id"), current);
-                        LOGGER.debug("Best = {}", best);
+                        LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), new VertexMinHeap(best).peek().distance);
                     }
                 }
 
@@ -368,15 +372,14 @@ class HNSWIndex {
                     }
 
                     final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVector);
-                    LOGGER.debug("{} Visited edge: {}", currentEdge.vertex.getMetadata("id"), currentEdge);
+                    LOGGER.debug("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
                     if (best.isEmpty()
                             || best.size() < k
                             || best.peek().distance > currentEdge.distance) {
                         if (!best.contains(currentEdge.vertex)) {
                             best.addAndTrim(currentEdge, k);
                             candidates.add(currentEdge);
-                            LOGGER.debug("{} Edge is best: {}", currentEdge.vertex.getMetadata("id"), currentEdge);
-                            LOGGER.debug("Best = {}", best);
+                            LOGGER.debug("[{}] !!!! {} Edge is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), new VertexMinHeap(best).peek().distance);
                         }
                     }
                 }
