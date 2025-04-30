@@ -396,7 +396,7 @@ class HNSWIndex {
 }
 
 public class HNSWExample {
-    static final Logger LOGGER = LoggerFactory.getLogger(Math.class);
+    static final Logger LOGGER = LoggerFactory.getLogger(HNSWExample.class);
 
     static double[] randomVector(int width) {
         final double[] vector = new double[width];
