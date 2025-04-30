@@ -5,7 +5,49 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.lang.Math;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+
+class CosineDistanceUtils {
+    private CosineDistanceUtils() {
+    }
+
+    static double dotProduct(double[] v1, double[] v2) {
+        assert v1.length == v2.length;
+        double dotProduct = 0;
+        for (int i = 0; i < v1.length; i++) {
+            dotProduct += v1[i] * v2[i];
+        }
+        return dotProduct;
+    }
+
+    static double norm(double[] vector) {
+        double sum = 0;
+        for (double v : vector) {
+            sum += v * v;
+        }
+        return Math.sqrt(sum);
+    }
+
+    static double cosineSimilarity(double[] v1, double[] v2) {
+        double dotProduct = dotProduct(v1, v2);
+        final double norm1 = norm(v1);
+        final double norm2 = norm(v2);
+        return dotProduct / (norm1 * norm2);
+    }
+
+    static double cosineSimilarity(Vertex v1, Vertex v2) {
+        return cosineSimilarity(v1.getVector(), v2.getVector());
+    }
+
+    static double cosineDistance(double[] v1, double[] v2) {
+        return 1 - cosineSimilarity(v1, v2);
+    }
+
+    static double cosineDistance(Vertex v1, Vertex v2) {
+        return cosineDistance(v1.getVector(), v2.getVector());
+    }
+}
 
 class Vertex {
     private double[] vector;
@@ -90,7 +132,26 @@ class Vertex {
     }
 }
 
+class VertexDistance {
+    final Vertex vertex;
+    final double distance;
+
+    VertexDistance(Vertex v, double d) {
+        vertex = v;
+        distance = d;
+    }
+
+    @Override
+    public String toString() {
+        return "VertexDistance{" +
+                "vertex=" + vertex +
+                ", distance=" + distance +
+                '}';
+    }
+}
+
 class HNSWIndex {
+    static final Random RANDOM = new Random(261707535563309L); // Nice distribution off a recent run
     static final int MAX_LEVEL = 8;
 
     private static final double LEVEL_PROBABILITY = 0.1;
@@ -103,7 +164,7 @@ class HNSWIndex {
     public void addVertex(double[] vector, Map<String, Object> metadata) {
         Vertex newVertex = new Vertex(vector, metadata);
         int chosenLevel = 0;
-        while (Math.random() < LEVEL_PROBABILITY && chosenLevel < MAX_LEVEL) {
+        while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && chosenLevel < MAX_LEVEL) {
             chosenLevel++;
         }
         newVertex.setMaxLevel(chosenLevel);
@@ -117,7 +178,7 @@ class HNSWIndex {
 
         for (int currentLevel = 0; currentLevel <= chosenLevel; currentLevel++) {
             List<Vertex> neighbors = greedySearch(newVertex, currentLevel);
-            neighbors.sort(Comparator.comparingDouble(v -> cosineDistance(newVertex, v)));
+            neighbors.sort(Comparator.comparingDouble(v -> CosineDistanceUtils.cosineDistance(newVertex, v)));
             if (neighbors.size() > M) {
                 neighbors = neighbors.subList(0, M);
             }
@@ -141,7 +202,7 @@ class HNSWIndex {
         // Max-heap to track the M farthest candidates (so we can replace them with closer ones)
         PriorityQueue<Vertex> candidates = new PriorityQueue<>(
                 M,
-                Comparator.<Vertex>comparingDouble(v -> cosineDistance(target, v)).reversed()
+                Comparator.<Vertex>comparingDouble(v -> CosineDistanceUtils.cosineDistance(target, v)).reversed()
         );
 
         Vertex currentEntryPoint = getEntryPoint(level);
@@ -163,7 +224,7 @@ class HNSWIndex {
             updateCandidates(candidates, bestNeighbor, target);
 
             // Early exit if the next neighbor is worse than the farthest in the candidates
-            if (candidates.size() == M && cosineDistance(target, bestNeighbor) > cosineDistance(target, candidates.peek())) {
+            if (candidates.size() == M && CosineDistanceUtils.cosineDistance(target, bestNeighbor) > CosineDistanceUtils.cosineDistance(target, candidates.peek())) {
                 break;
             }
 
@@ -182,60 +243,24 @@ class HNSWIndex {
     }
 
     private void updateCandidates(PriorityQueue<Vertex> candidates, Vertex vertex, Vertex target) {
-        double newDist = cosineDistance(target, vertex);
+        double newDist = CosineDistanceUtils.cosineDistance(target, vertex);
         if (candidates.size() < M) {
             candidates.add(vertex);
         } else {
             Vertex farthest = candidates.peek();
-            if (newDist < cosineDistance(target, farthest)) {
+            if (newDist < CosineDistanceUtils.cosineDistance(target, farthest)) {
                 candidates.poll();
                 candidates.add(vertex);
             }
         }
     }
 
-    static double cosineSimilarity(Vertex v1, Vertex v2) {
-        double dotProduct = 0;
-        for (int i = 0; i < v1.getVector().length; i++) {
-            dotProduct += v1.getVector()[i] * v2.getVector()[i];
-        }
-        double norm1 = v1.getNorm();
-        double norm2 = v2.getNorm();
-        return dotProduct / (norm1 * norm2);
-    }
-
-    static double cosineDistance(Vertex v1, Vertex v2) {
-        return 1 - cosineSimilarity(v1, v2);
-    }
-
-    private static double dotProduct(double[] v1, double[] v2) {
-        double sum = 0;
-        for (int i = 0; i < v1.length; i++) {
-            sum += v1[i] * v2[i];
-        }
-        return sum;
-    }
-
     public List<Vertex> getAllVertex() {
         return this.vertices;
     }
 
-    private static class VertexDistance {
-        final Vertex vertex;
-        final double distance;
-
-        VertexDistance(Vertex v, double d) {
-            vertex = v;
-            distance = d;
-        }
-
-        @Override
-        public String toString() {
-            return "VertexDistance{" +
-                    "vertex=" + vertex +
-                    ", distance=" + distance +
-                    '}';
-        }
+    public List<List<Vertex>> getAllLayers() {
+        return List.copyOf(entryPoints);
     }
 
     public void removeVertex(Vertex v) {
@@ -302,8 +327,8 @@ class HNSWIndex {
         // Max-heap to track top k candidates (stores largest distances first)
         PriorityQueue<Vertex> candidateHeap = new PriorityQueue<>(
                 (a, b) -> {
-                    double distA = cosineDistance(queryVertex, a);
-                    double distB = cosineDistance(queryVertex, b);
+                    double distA = CosineDistanceUtils.cosineDistance(queryVertex, a);
+                    double distB = CosineDistanceUtils.cosineDistance(queryVertex, b);
                     return Double.compare(distB, distA); // Reverse order for max-heap
                 }
         );
@@ -324,7 +349,7 @@ class HNSWIndex {
 
             // Early stopping: if new neighbor is worse than current worst candidate
             if (candidateHeap.size() == k &&
-                    cosineDistance(queryVertex, bestNeighbor) > cosineDistance(queryVertex, candidateHeap.peek())) {
+                    CosineDistanceUtils.cosineDistance(queryVertex, bestNeighbor) > CosineDistanceUtils.cosineDistance(queryVertex, candidateHeap.peek())) {
                 break;
             }
 
@@ -350,7 +375,7 @@ class HNSWIndex {
             if (!visited.contains(neighbor)) {
                 double[] neighborVector = neighbor.getVector();
                 double neighborNorm = neighbor.getNorm();
-                double dot = dotProduct(targetVector, neighborVector);
+                double dot = CosineDistanceUtils.dotProduct(targetVector, neighborVector);
                 double distance = 1 - (dot / (targetNorm * neighborNorm));
                 if (distance < minDistance) {
                     minDistance = distance;
@@ -368,14 +393,14 @@ class HNSWIndex {
             Vertex vertex,
             int k
     ) {
-        double currentDist = cosineDistance(vertex, queryVertex);
+        double currentDist = CosineDistanceUtils.cosineDistance(vertex, queryVertex);
 
         if (heap.size() < k) {
             heap.add(vertex);
         } else {
             // Replace only if better than the worst candidate
             Vertex worstCandidate = heap.peek();
-            if (currentDist < cosineDistance(worstCandidate, queryVertex)) {
+            if (currentDist < CosineDistanceUtils.cosineDistance(worstCandidate, queryVertex)) {
                 heap.poll();
                 heap.add(vertex);
             }
@@ -383,71 +408,93 @@ class HNSWIndex {
     }
 
     static Comparator<Vertex> getVertexComparator(final Vertex queryVertex) {
-        return Comparator.comparingDouble(v -> cosineDistance(v, queryVertex));
+        return Comparator.comparingDouble(v -> CosineDistanceUtils.cosineDistance(v, queryVertex));
     }
 
 }
 
 public class HNSWExample {
-    static final Logger LOGGER = LoggerFactory.getLogger(Math.class);
-    static final Random RANDOM = new Random();
+    static final Logger LOGGER = LoggerFactory.getLogger(HNSWExample.class);
 
-    static double[] randomVector() {
-        return new double[]{
-                RANDOM.nextDouble(-1000, 1000),
-                RANDOM.nextDouble(-1000, 1000),
-                RANDOM.nextDouble(-1000, 1000),
-        };
+    static double[] randomVector(int width) {
+        final double[] vector = new double[width];
+        for (int i = 0; i < vector.length; i++) {
+            vector[i] = HNSWIndex.RANDOM.nextDouble(-1000, 1000);
+        }
+        return vector;
     }
 
     public static void main(String[] args) {
         final HNSWIndex index = new HNSWIndex();
 
-//        final double[][] data = {
-//                {1.0, 2.0, 3.0},
-//                {4.0, 5.0, 6.0},
-//                {7.0, 8.0, 9.0},
-//                {2.0, 3.0, 4.0},
-//                {5.0, 6.0, 7.0},
-//                {8.0, 9.0, 10.0},
-//                {3.0, 4.0, 5.0},
-//                {6.0, 7.0, 8.0},
-//                {9.0, 10.0, 11.0},
-//                {4.0, 5.0, 6.0},
-//                {10.0, 11.0, 12.0},
-//                {5.0, 6.0, 7.0},
-//                {11.0, 12.0, 13.0},
-//                {6.0, 7.0, 8.0},
-//                {12.0, 13.0, 14.0},
-//                {7.0, 8.0, 9.0},
-//                {13.0, 14.0, 15.0},
-//                {8.0, 9.0, 10.0},
-//                {14.0, 15.0, 16.0},
-//                {9.0, 10.0, 11.0},
-//        };
-
-        List<double[]> data = IntStream.range(0, 10000)
-                .mapToObj(i -> randomVector())
+        final int vectorSize = 10;
+        LOGGER.info("Vectors generating... vector size = {}", vectorSize);
+        final List<double[]> data = IntStream.range(0, 1_000_000)
+                .mapToObj(i -> randomVector(vectorSize))
                 .toList();
 
-        for (double[] vector : data) {
-            Vertex v = new Vertex(vector);
-            index.addVertex(vector, Map.of("id", Arrays.toString(vector)));
+        LOGGER.info("...done. Layers generating...");
+        for (int i = 0; i < data.size(); i++) {
+            final double[] vector = data.get(i);
+            index.addVertex(vector, Map.of("id", i));
         }
-
-        double[] queryVector = {5.0, 6.0, 7.0};
-        Vertex queryVertex = new Vertex(queryVector);
-        LOGGER.info("Searching vertex: {}, Metadata: {}", Arrays.toString(queryVertex.getVector()), queryVertex.getMetadata("id"));
+        LOGGER.info("...done.");
 
         System.out.println();
-        final List<Vertex> similarVertices = index.search(queryVector, 5);
+        LOGGER.info("Exploring layer density...");
+        final List<List<Vertex>> layers = index.getAllLayers();
+        for (int layer = layers.size() - 1; layer >= 0; layer--) {
+            LOGGER.info("    - Layer {} : {}", layer, layers.get(layer).size());
+        }
+
+        System.out.println();
+        final double[] queryVector = new double[vectorSize];
+        for (int i = 0; i < queryVector.length; i++) {
+            queryVector[i] = 5.0 + i; // 5.0, 6.0, 7.0, ...
+        }
+        if (queryVector.length != data.get(0).length) {
+            throw new IllegalStateException("Query vector didn't match data vector length! They cannot be compared!");
+        }
+        final Vertex queryVertex = new Vertex(queryVector);
+        LOGGER.info("Searching vertex: {}", Arrays.toString(queryVertex.getVector()));
+
+        if (LOGGER.isDebugEnabled()) {
+            System.out.println();
+            LOGGER.debug("All vertex search begins...");
+            for (int oLevel = layers.size() - 1; oLevel >= 0; oLevel--) { // For each layer...;
+                final List<Vertex> vertices = layers.get(oLevel).stream()
+                        .sorted(Comparator.comparingDouble(v -> CosineDistanceUtils.cosineSimilarity(queryVector, v.getVector())))
+                        .toList();
+                LOGGER.debug("Layer {} begins with {} nodes...", oLevel, vertices.size());
+                for (Vertex v : vertices) {
+                    LOGGER.debug("    - Node: {} @ {}, {} : {}", v.getMetadata("id"), oLevel, Arrays.toString(v.getVector()), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+                    for (int level = 0; level <= v.getMaxLevel(); level++) {
+                        LOGGER.debug("        - Edges @ {}: {} : {}", level, v.getEdges(level).stream().map(vd -> vd.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")), CosineDistanceUtils.cosineSimilarity(v, queryVertex));
+                    }
+                }
+                LOGGER.debug("Layer {} ends with {} nodes...", oLevel, vertices.size());
+            }
+        }
+
+        System.out.println();
+        LOGGER.info("Brute-force searching best matches...");
+        final int topK = 5;
+        final List<Vertex> allVertices = index.getAllVertex().stream()
+                .sorted(Comparator.comparingDouble(v1 -> CosineDistanceUtils.cosineDistance(v1, queryVertex)))
+                .limit(topK * 3L)
+                .toList();
+        for (Vertex v : allVertices) {
+            LOGGER.info("All vertex: {}, Metadata: {} @ {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+        }
+
+        System.out.println();
+        LOGGER.info("Index searching best matches...");
+        final List<Vertex> similarVertices = index.search(queryVector, topK);
         for (Vertex v : similarVertices) {
-            LOGGER.info("Similar vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), HNSWIndex.cosineSimilarity(queryVertex, v));
-        }
-
-        System.out.println();
-        for (Vertex v : index.getAllVertex().stream().sorted(HNSWIndex.getVertexComparator(queryVertex)).limit(similarVertices.size() * 3L).toList()) {
-            LOGGER.info("All vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), HNSWIndex.cosineSimilarity(queryVertex, v));
+            LOGGER.info("Similar vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+            for (int level = 0; level <= v.getMaxLevel(); level++) {
+                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
+            }
         }
     }
 }
