@@ -260,46 +260,7 @@ class HNSWIndex {
                 continue;
             }
 
-            final Set<Vertex> visited = new HashSet<>();
-            final VertexMinHeap candidates = new VertexMinHeap();
-            final VertexMaxHeap best = new VertexMaxHeap();
-            if (propagateBest != null && !propagateBest.isEmpty()) {
-                // Find the best neighbors in this level, searching from the previous level's matches
-                candidates.addAll(propagateBest);
-            } else {
-                // Find the best neighbors in this level, searching from the entry point
-                candidates.add(new VertexDistance(layers.get(currentLevel).get(0), newVector));
-            }
-
-            while (!candidates.isEmpty()) {
-                final VertexDistance current = candidates.poll();
-                if (visited.contains(current.vertex)) {
-                    continue;
-                }
-
-                visited.add(current.vertex);
-                if (best.isEmpty()
-                        || best.size() < Vertex.ML
-                        || best.peek().distance > current.distance) {
-                    best.addAndTrim(current, Vertex.ML);
-                }
-
-                for (VertexDistance edge : current.vertex.getEdges(currentLevel)) {
-                    if (visited.contains(edge.vertex)) {
-                        continue;
-                    }
-
-                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVector);
-                    if (best.isEmpty()
-                            || best.size() < Vertex.ML
-                            || best.peek().distance > currentEdge.distance) {
-                        best.addAndTrim(currentEdge, Vertex.ML);
-                        candidates.add(currentEdge);
-                        visited.add(currentEdge.vertex);
-                    }
-                }
-            }
-
+            final VertexMaxHeap best = getVertexDistancesAtLayer(newVector, propagateBest, currentLevel);
             for (VertexDistance vdNeighbor : best) {
                 newVertex.addEdge(currentLevel, vdNeighbor);
                 vdNeighbor.vertex.addEdge(currentLevel, new VertexDistance(newVertex, vdNeighbor.distance));
@@ -312,6 +273,63 @@ class HNSWIndex {
 
             propagateBest = best;
         }
+
+        // Check up one level also for updates to parent vertex
+        {
+            final int levelUp = level + 1;
+            final VertexMaxHeap best = getVertexDistancesAtLayer(newVector, null, levelUp);
+            for (VertexDistance vdNeighbor : best) {
+                newVertex.addEdge(level, vdNeighbor);
+                vdNeighbor.vertex.addEdge(level, new VertexDistance(newVertex, vdNeighbor.distance));
+            }
+        }
+    }
+
+    private VertexMaxHeap getVertexDistancesAtLayer(double[] newVector, Collection<VertexDistance> startingNodes, int level) {
+        if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
+            return new VertexMaxHeap();
+        }
+
+        final Set<Vertex> visited = new HashSet<>();
+        final VertexMinHeap candidates = new VertexMinHeap();
+        final VertexMaxHeap best = new VertexMaxHeap();
+        if (startingNodes != null && !startingNodes.isEmpty()) {
+            // Find the best neighbors in this level, searching from the previous level's matches
+            candidates.addAll(startingNodes);
+        } else {
+            // Find the best neighbors in this level, searching from the entry point
+            candidates.add(new VertexDistance(layers.get(level).get(0), newVector));
+        }
+
+        while (!candidates.isEmpty()) {
+            final VertexDistance current = candidates.poll();
+            if (visited.contains(current.vertex)) {
+                continue;
+            }
+
+            visited.add(current.vertex);
+            if (best.isEmpty()
+                    || best.size() < Vertex.ML
+                    || best.peek().distance > current.distance) {
+                best.addAndTrim(current, Vertex.ML);
+            }
+
+            for (VertexDistance edge : current.vertex.getEdges(level)) {
+                if (visited.contains(edge.vertex)) {
+                    continue;
+                }
+
+                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVector);
+                if (best.isEmpty()
+                        || best.size() < Vertex.ML
+                        || best.peek().distance > currentEdge.distance) {
+                    best.addAndTrim(currentEdge, Vertex.ML);
+                    candidates.add(currentEdge);
+                    visited.add(currentEdge.vertex);
+                }
+            }
+        }
+        return best;
     }
 
     public List<List<Vertex>> getAllLayers() {
