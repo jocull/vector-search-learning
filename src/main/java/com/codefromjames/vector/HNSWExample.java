@@ -65,15 +65,18 @@ class VertexDistance {
 
     @Override
     public final boolean equals(Object o) {
-        if (!(o instanceof VertexDistance that)) return false;
-
-        // Defer equality checks to the underlying vertices
-        return Objects.equals(vertex, that.vertex);
+        if (o instanceof Vertex that) {
+            return vertex.equals(that);
+        }
+        if (o instanceof VertexDistance that) {
+            return vertex.equals(that.vertex);
+        }
+        return false;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(vertex);
+        return vertex.hashCode();
     }
 }
 
