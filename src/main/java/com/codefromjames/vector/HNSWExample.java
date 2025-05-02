@@ -85,7 +85,7 @@ class Vertex {
 
     private final double[] vector;
     private final Map<String, Object> metadata;
-    private final List<VertexMaxHeap> edges;
+    private final List<VertexDistanceHeap> edges;
     private int maxLevel;
 
     public Vertex(double[] vector) {
@@ -102,27 +102,19 @@ class Vertex {
     public void setMaxLevel(int level) {
         this.maxLevel = level;
         while (edges.size() <= level) {
-            edges.add(new VertexMaxHeap());
+            edges.add(new VertexDistanceHeap());
         }
     }
 
-    public PriorityQueue<VertexDistance> getEdges(int level) {
+    public VertexDistanceHeap getEdges(int level) {
         return edges.get(level);
     }
 
     public void addEdge(int level, VertexDistance neighbor) {
         while (edges.size() <= level) {
-            edges.add(new VertexMaxHeap());
+            edges.add(new VertexDistanceHeap());
         }
-
-        final VertexMaxHeap layerEdges = edges.get(level);
-        for (VertexDistance layerEdge : layerEdges) {
-            if (layerEdge.vertex == neighbor.vertex) {
-                // Exists already
-                return;
-            }
-        }
-        layerEdges.addAndTrimIfBetterThanWorst(neighbor, ML);
+        edges.get(level).addIfCloserAndTrim(neighbor, ML);
     }
 
     public void removeEdge(int level, Vertex neighbor) {
@@ -160,73 +152,42 @@ class Vertex {
     }
 }
 
-class VertexMinHeap extends PriorityQueue<VertexDistance> {
+class VertexDistanceHeap extends TreeSet<VertexDistance> {
     private static final Comparator<VertexDistance> COMPARATOR =
             Comparator.comparingDouble(vd -> vd.distance);
 
-    public VertexMinHeap() {
+    public VertexDistanceHeap() {
         super(COMPARATOR);
     }
 
-    public VertexMinHeap(Collection<? extends VertexDistance> c) {
-        this();
-        addAll(c);
-    }
-}
-
-class VertexMaxHeap extends PriorityQueue<VertexDistance> {
-    private static final Comparator<VertexDistance> COMPARATOR =
-            Comparator.<VertexDistance>comparingDouble(vd -> vd.distance).reversed();
-
-    public VertexMaxHeap() {
-        super(COMPARATOR);
-    }
-
-    public VertexMaxHeap(Collection<? extends VertexDistance> c) {
-        this();
+    public VertexDistanceHeap(Collection<? extends VertexDistance> c) {
+        super(c);
         addAll(c);
     }
 
-    @Override
-    public boolean contains(Object o) {
-        if (o instanceof Vertex v) {
-            for (VertexDistance vd : this) {
-                if (vd.vertex == v) {
-                    return true;
-                }
-            }
-            return false;
+    public boolean addIfCloserAndTrim(VertexDistance vd, int size) {
+        assert size > -1;
+        if (size() < size
+                || last().distance > vd.distance) {
+            add(vd);
+            trimMax(size);
+            return true;
         }
-        return super.contains(o);
+        return false;
     }
 
-    public void addAndTrimIfBetterThanWorst(VertexDistance vd, int size) {
-        if (!addIfBetterThanWorst(vd)) {
-            return;
-        }
-        trim(size);
-    }
-
-    public void addAndTrim(VertexDistance currentEdge, int size) {
-        add(currentEdge);
-        trim(size);
-    }
-
-    private void trim(int size) {
-        assert size >= 0;
+    public void trimMin(int size) {
+        assert size > -1;
         while (size() > size) {
-            poll();
+            pollFirst();
         }
     }
 
-    private boolean addIfBetterThanWorst(VertexDistance vd) {
-        if (!isEmpty()) {
-            if (peek().distance <= vd.distance) {
-                return false;
-            }
+    public void trimMax(int size) {
+        assert size > -1;
+        while (size() > size) {
+            pollLast();
         }
-        add(vd);
-        return true;
     }
 }
 
@@ -255,7 +216,7 @@ class HNSWIndex {
             layers.add(new ArrayList<>());
         }
 
-        VertexMaxHeap propagateBest = null;
+        VertexDistanceHeap propagateBest = null;
         for (int currentLevel = level; currentLevel >= 0; currentLevel--) {
             // If there are no nodes in this layer, then it's the first entry. Just add it.
             if (layers.get(currentLevel).isEmpty()) {
@@ -263,7 +224,7 @@ class HNSWIndex {
                 continue;
             }
 
-            final VertexMaxHeap best = getVertexDistancesAtLayer(newVector, propagateBest, currentLevel);
+            final VertexDistanceHeap best = getVertexDistancesAtLayer(newVector, propagateBest, currentLevel);
             for (VertexDistance vdNeighbor : best) {
                 newVertex.addEdge(currentLevel, vdNeighbor);
                 vdNeighbor.vertex.addEdge(currentLevel, new VertexDistance(newVertex, vdNeighbor.distance));
@@ -280,7 +241,7 @@ class HNSWIndex {
         // Check up one level also for updates to parent vertex
         {
             final int levelUp = level + 1;
-            final VertexMaxHeap best = getVertexDistancesAtLayer(newVector, null, levelUp);
+            final VertexDistanceHeap best = getVertexDistancesAtLayer(newVector, null, levelUp);
             for (VertexDistance vdNeighbor : best) {
                 newVertex.addEdge(level, vdNeighbor);
                 vdNeighbor.vertex.addEdge(level, new VertexDistance(newVertex, vdNeighbor.distance));
@@ -288,14 +249,14 @@ class HNSWIndex {
         }
     }
 
-    private VertexMaxHeap getVertexDistancesAtLayer(double[] newVector, Collection<VertexDistance> startingNodes, int level) {
+    private VertexDistanceHeap getVertexDistancesAtLayer(double[] newVector, Collection<VertexDistance> startingNodes, int level) {
         if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
-            return new VertexMaxHeap();
+            return new VertexDistanceHeap();
         }
 
         final Set<Vertex> visited = new HashSet<>();
-        final VertexMinHeap candidates = new VertexMinHeap();
-        final VertexMaxHeap best = new VertexMaxHeap();
+        final VertexDistanceHeap candidates = new VertexDistanceHeap();
+        final VertexDistanceHeap best = new VertexDistanceHeap();
         if (startingNodes != null && !startingNodes.isEmpty()) {
             // Find the best neighbors in this level, searching from the previous level's matches
             candidates.addAll(startingNodes);
@@ -305,17 +266,13 @@ class HNSWIndex {
         }
 
         while (!candidates.isEmpty()) {
-            final VertexDistance current = candidates.poll();
+            final VertexDistance current = candidates.pollFirst();
             if (visited.contains(current.vertex)) {
                 continue;
             }
 
             visited.add(current.vertex);
-            if (best.isEmpty()
-                    || best.size() < Vertex.ML
-                    || best.peek().distance > current.distance) {
-                best.addAndTrim(current, Vertex.ML);
-            }
+            best.addIfCloserAndTrim(current, Vertex.ML);
 
             for (VertexDistance edge : current.vertex.getEdges(level)) {
                 if (visited.contains(edge.vertex)) {
@@ -323,12 +280,9 @@ class HNSWIndex {
                 }
 
                 final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVector);
-                if (best.isEmpty()
-                        || best.size() < Vertex.ML
-                        || best.peek().distance > currentEdge.distance) {
-                    best.addAndTrim(currentEdge, Vertex.ML);
+                visited.add(currentEdge.vertex);
+                if (best.addIfCloserAndTrim(currentEdge, Vertex.ML)) {
                     candidates.add(currentEdge);
-                    visited.add(currentEdge.vertex);
                 }
             }
         }
@@ -354,12 +308,12 @@ class HNSWIndex {
     }
 
     public List<Vertex> search(double[] queryVector, int k) {
-        final VertexMaxHeap best = new VertexMaxHeap();
+        final VertexDistanceHeap best = new VertexDistanceHeap();
         for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
             if (layers.get(currentLevel).isEmpty()) {
                 continue;
             }
-            final VertexMinHeap candidates = new VertexMinHeap();
+            final VertexDistanceHeap candidates = new VertexDistanceHeap();
             // Carry over best from the last layer rather than starting over
             candidates.addAll(best);
             if (candidates.isEmpty()) {
@@ -374,7 +328,7 @@ class HNSWIndex {
             // Find the best neighbors in this level, searching from the entry point
             final Set<Vertex> visited = new HashSet<>();
             while (!candidates.isEmpty()) {
-                final VertexDistance current = candidates.poll();
+                final VertexDistance current = candidates.pollFirst();
                 if (visited.contains(current.vertex)) {
                     continue;
                 }
@@ -383,14 +337,9 @@ class HNSWIndex {
                 if (LOGGER.isDebugEnabled()) {
                     LOGGER.debug("[{}] {} Visited vertex @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance);
                 }
-                if (best.isEmpty()
-                        || best.size() < k
-                        || best.peek().distance > current.distance) {
-                    if (!best.contains(current)) {
-                        best.addAndTrim(current, k);
-                        if (LOGGER.isDebugEnabled()) {
-                            LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), new VertexMinHeap(best).peek().distance);
-                        }
+                if (best.addIfCloserAndTrim(current, k)) {
+                    if (LOGGER.isDebugEnabled()) {
+                        LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), best.pollFirst().distance);
                     }
                 }
 
@@ -403,27 +352,18 @@ class HNSWIndex {
                     if (LOGGER.isDebugEnabled()) {
                         LOGGER.debug("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
                     }
-                    if (best.isEmpty()
-                            || best.size() < k
-                            || best.peek().distance > currentEdge.distance) {
-                        if (!best.contains(currentEdge)) {
-                            best.addAndTrim(currentEdge, k);
-                            candidates.add(currentEdge);
-                            if (LOGGER.isDebugEnabled()) {
-                                LOGGER.debug("[{}] !!!! {} Edge is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), new VertexMinHeap(best).peek().distance);
-                            }
+                    if (best.addIfCloserAndTrim(currentEdge, k)) {
+                        if (LOGGER.isDebugEnabled()) {
+                            LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
                         }
                     }
                 }
             }
         }
 
-        final List<Vertex> result = new ArrayList<>(best.size());
-        while (!best.isEmpty()) {
-            result.add(best.poll().vertex);
-        }
-        Collections.reverse(result);
-        return result;
+        return best.stream()
+                .map(v -> v.vertex)
+                .toList();
     }
 }
 
