@@ -65,11 +65,11 @@ class VertexDistance {
 
     @Override
     public final boolean equals(Object o) {
-        if (o instanceof Vertex that) {
-            return vertex.equals(that);
-        }
         if (o instanceof VertexDistance that) {
             return vertex.equals(that.vertex);
+        }
+        if (o instanceof Vertex that) {
+            return vertex.equals(that);
         }
         return false;
     }
@@ -364,8 +364,11 @@ class HNSWIndex {
             candidates.addAll(best);
             if (candidates.isEmpty()) {
                 // Start at the entry point of this layer if there was nothing to carry
-                candidates.add(new VertexDistance(layers.get(currentLevel).get(0), queryVector));
-                LOGGER.debug("[{}] Entry candidate: {} @ {}", currentLevel, candidates.peek().vertex.getMetadata("id"), candidates.peek().distance);
+                final VertexDistance entryVd = new VertexDistance(layers.get(currentLevel).get(0), queryVector);
+                candidates.add(entryVd);
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("[{}] Entry candidate: {} @ {}", currentLevel, entryVd.vertex.getMetadata("id"), entryVd.distance);
+                }
             }
 
             // Find the best neighbors in this level, searching from the entry point
@@ -377,13 +380,17 @@ class HNSWIndex {
                 }
 
                 visited.add(current.vertex);
-                LOGGER.debug("[{}] {} Visited vertex @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance);
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("[{}] {} Visited vertex @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance);
+                }
                 if (best.isEmpty()
                         || best.size() < k
                         || best.peek().distance > current.distance) {
-                    if (!best.contains(current.vertex)) {
+                    if (!best.contains(current)) {
                         best.addAndTrim(current, k);
-                        LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), new VertexMinHeap(best).peek().distance);
+                        if (LOGGER.isDebugEnabled()) {
+                            LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), new VertexMinHeap(best).peek().distance);
+                        }
                     }
                 }
 
@@ -393,14 +400,18 @@ class HNSWIndex {
                     }
 
                     final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVector);
-                    LOGGER.debug("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
+                    if (LOGGER.isDebugEnabled()) {
+                        LOGGER.debug("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
+                    }
                     if (best.isEmpty()
                             || best.size() < k
                             || best.peek().distance > currentEdge.distance) {
-                        if (!best.contains(currentEdge.vertex)) {
+                        if (!best.contains(currentEdge)) {
                             best.addAndTrim(currentEdge, k);
                             candidates.add(currentEdge);
-                            LOGGER.debug("[{}] !!!! {} Edge is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), new VertexMinHeap(best).peek().distance);
+                            if (LOGGER.isDebugEnabled()) {
+                                LOGGER.debug("[{}] !!!! {} Edge is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), new VertexMinHeap(best).peek().distance);
+                            }
                         }
                     }
                 }
