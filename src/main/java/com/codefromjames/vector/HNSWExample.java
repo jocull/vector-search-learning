@@ -83,7 +83,7 @@ class VertexDistance {
 }
 
 class Vertex {
-    static final int ML = 16;
+    static final int ML = 32;
 
     private final double[] vector;
     private final Map<String, Object> metadata;
@@ -112,11 +112,11 @@ class Vertex {
         return edges.get(level);
     }
 
-    public void addEdge(int level, VertexDistance neighbor) {
+    public boolean addEdge(int level, VertexDistance neighbor) {
         while (edges.size() <= level) {
             edges.add(new VertexDistanceHeap());
         }
-        edges.get(level).addIfCloserAndTrim(neighbor, ML);
+        return edges.get(level).addIfCloserAndTrim(neighbor, ML);
     }
 
     public void removeEdge(int level, Vertex neighbor) {
@@ -218,18 +218,32 @@ class HNSWIndex {
             layers.add(new ArrayList<>());
         }
 
+        final Set<Vertex> remapped = new HashSet<>();
         VertexDistanceHeap propagateBest = null;
-        for (int currentLevel = level; currentLevel >= 0; currentLevel--) {
-            // If there are no nodes in this layer, then it's the first entry. Just add it.
+        for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+            // If there are no nodes in this layer...
             if (layers.get(currentLevel).isEmpty()) {
-                layers.get(currentLevel).add(newVertex);
+                if (currentLevel == newVertex.getMaxLevel()) {
+                    // ...then it's the first entry - add it.
+                    layers.get(currentLevel).add(newVertex);
+                }
+                // ...there's nothing else to do
                 continue;
             }
 
             final VertexDistanceHeap best = getVertexDistancesAtLayer(newVector, propagateBest, currentLevel);
+            // For nodes that are underneath us in the layer, associate newer or better peers
             for (VertexDistance vdNeighbor : best) {
-                newVertex.addEdge(currentLevel, vdNeighbor);
-                vdNeighbor.vertex.addEdge(currentLevel, new VertexDistance(newVertex, vdNeighbor.distance));
+                // If the new vertex would exist in this level, create neighbors for it
+                if (level >= currentLevel) {
+                    newVertex.addEdge(currentLevel, vdNeighbor);
+                }
+                // Check the edges for this neighbor at the target level to see if this is an improvement.
+                // Don't process nodes we've already touched again if they remain the best from a previous layer.
+                if (!remapped.contains(vdNeighbor.vertex)) {
+                    remapped.add(vdNeighbor.vertex);
+                    vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
+                }
             }
 
             // Insert the new node into the level it belongs to
@@ -238,16 +252,6 @@ class HNSWIndex {
             }
 
             propagateBest = best;
-        }
-
-        // Check up one level also for updates to parent vertex
-        {
-            final int levelUp = level + 1;
-            final VertexDistanceHeap best = getVertexDistancesAtLayer(newVector, null, levelUp);
-            for (VertexDistance vdNeighbor : best) {
-                newVertex.addEdge(level, vdNeighbor);
-                vdNeighbor.vertex.addEdge(level, new VertexDistance(newVertex, vdNeighbor.distance));
-            }
         }
     }
 
@@ -383,10 +387,10 @@ public class HNSWExample {
     public static void main(String[] args) {
         final HNSWIndex index = new HNSWIndex();
 
-        final int vectorSize = 10;
-        LOGGER.info("Vectors generating... vector size = {}", vectorSize);
-        final List<double[]> data = IntStream.range(0, 1_000_000)
-                .mapToObj(i -> randomVector(vectorSize))
+        final int vectorWidth = 1000;
+        LOGGER.info("Vectors generating... vector width = {}", vectorWidth);
+        final List<double[]> data = IntStream.range(0, 10_000)
+                .mapToObj(i -> randomVector(vectorWidth))
                 .toList();
 
         LOGGER.info("...done. Layers generating...");
@@ -404,7 +408,7 @@ public class HNSWExample {
         }
 
         System.out.println();
-        final double[] queryVector = new double[vectorSize];
+        final double[] queryVector = new double[vectorWidth];
         for (int i = 0; i < queryVector.length; i++) {
             queryVector[i] = 5.0 + i; // 5.0, 6.0, 7.0, ...
         }
@@ -434,18 +438,30 @@ public class HNSWExample {
 
         System.out.println();
         LOGGER.info("Brute-force searching best matches...");
-        final int topK = 5;
+        final int topK = 20;
         final List<Vertex> allVertices = index.getAllVertex().stream()
                 .sorted(Comparator.comparingDouble(v1 -> CosineDistanceUtils.cosineDistance(v1, queryVertex)))
-                .limit(topK * 3L)
                 .toList();
-        for (Vertex v : allVertices) {
+        final List<Vertex> allVerticesDisplaySet = allVertices.stream()
+                .limit(topK)
+                .toList();
+        for (Vertex v : allVerticesDisplaySet) {
             LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}, Vector: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v), Arrays.toString(v.getVector()));
+            for (int level = 0; level <= v.getMaxLevel(); level++) {
+                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
+            }
         }
 
         System.out.println();
         LOGGER.info("Index searching best matches...");
         final List<Vertex> similarVertices = index.search(queryVector, topK);
+        LOGGER.info("...done. Accuracy out of {}:", allVertices.size());
+        for (int i = 0; i < similarVertices.size(); i++) {
+            final Vertex v = similarVertices.get(i);
+            LOGGER.info("    - #{} is {} @ {}", (i + 1), v.getMetadata("id"), allVertices.indexOf(v));
+        }
+
+        System.out.println();
         for (Vertex v : similarVertices) {
             LOGGER.info("Similar vertex: Metadata: {}, Distance: {}, Vector: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v), Arrays.toString(v.getVector()));
             for (int level = 0; level <= v.getMaxLevel(); level++) {
