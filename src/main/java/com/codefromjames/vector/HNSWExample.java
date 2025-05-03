@@ -116,6 +116,10 @@ class Vertex {
         while (edges.size() <= level) {
             edges.add(new VertexDistanceHeap());
         }
+        if (this == neighbor.vertex) {
+            // Don't add self as a neighbor
+            return false;
+        }
         return edges.get(level).addIfCloserAndTrim(neighbor, ML);
     }
 
