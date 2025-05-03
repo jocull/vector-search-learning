@@ -366,6 +366,8 @@ class HNSWIndex {
                         if (LOGGER.isDebugEnabled()) {
                             LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
                         }
+                        // Plan to visit this vertex to check all of its edges also
+                        candidates.add(currentEdge);
                     }
                 }
             }
