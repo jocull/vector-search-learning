@@ -201,8 +201,11 @@ class HNSWIndex {
     private static final Logger LOGGER = LoggerFactory.getLogger(HNSWIndex.class);
 
     static final Random RANDOM = new Random(261707535563309L); // Nice distribution off a recent run
-    private static final double LEVEL_PROBABILITY = 0.5;
-    private static final int MAX_LEVEL = 16;
+    private static final double LEVEL_PROBABILITY = 0.25;
+    private static final int MAX_LEVEL = 12;
+
+    private static int EF_CONSTRUCTION = 200;
+    private static int EF_SEARCH = 50;
 
     private final List<List<Vertex>> layers = new ArrayList<>();
 
@@ -282,7 +285,7 @@ class HNSWIndex {
             }
 
             visited.add(current.vertex);
-            best.addIfCloserAndTrim(current, Vertex.ML);
+            best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
 
             for (VertexDistance edge : current.vertex.getEdges(level)) {
                 if (visited.contains(edge.vertex)) {
@@ -291,7 +294,7 @@ class HNSWIndex {
 
                 final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVector);
                 visited.add(currentEdge.vertex);
-                if (best.addIfCloserAndTrim(currentEdge, Vertex.ML)) {
+                if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
                     candidates.add(currentEdge);
                 }
             }
@@ -347,7 +350,7 @@ class HNSWIndex {
                 if (LOGGER.isTraceEnabled()) {
                     LOGGER.trace("[{}] {} Visited vertex @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance);
                 }
-                if (best.addIfCloserAndTrim(current, k)) {
+                if (best.addIfCloserAndTrim(current, EF_SEARCH)) {
                     if (LOGGER.isTraceEnabled()) {
                         LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), best.pollFirst().distance);
                     }
@@ -362,7 +365,7 @@ class HNSWIndex {
                     if (LOGGER.isTraceEnabled()) {
                         LOGGER.trace("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
                     }
-                    if (best.addIfCloserAndTrim(currentEdge, k)) {
+                    if (best.addIfCloserAndTrim(currentEdge, EF_SEARCH)) {
                         // Plan to visit this vertex to check all of its edges also
                         candidates.add(currentEdge);
                         if (LOGGER.isTraceEnabled()) {
@@ -375,6 +378,7 @@ class HNSWIndex {
 
         return best.stream()
                 .map(v -> v.vertex)
+                .limit(k) // Clamp the EF_SEARCH to get the best set
                 .toList();
     }
 }
