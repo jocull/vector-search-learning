@@ -330,8 +330,8 @@ class HNSWIndex {
                 // Start at the entry point of this layer if there was nothing to carry
                 final VertexDistance entryVd = new VertexDistance(layers.get(currentLevel).get(0), queryVector);
                 candidates.add(entryVd);
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("[{}] Entry candidate: {} @ {}", currentLevel, entryVd.vertex.getMetadata("id"), entryVd.distance);
+                if (LOGGER.isTraceEnabled()) {
+                    LOGGER.trace("[{}] Entry candidate: {} @ {}", currentLevel, entryVd.vertex.getMetadata("id"), entryVd.distance);
                 }
             }
 
@@ -344,12 +344,12 @@ class HNSWIndex {
                 }
 
                 visited.add(current.vertex);
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("[{}] {} Visited vertex @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance);
+                if (LOGGER.isTraceEnabled()) {
+                    LOGGER.trace("[{}] {} Visited vertex @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance);
                 }
                 if (best.addIfCloserAndTrim(current, k)) {
-                    if (LOGGER.isDebugEnabled()) {
-                        LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), best.pollFirst().distance);
+                    if (LOGGER.isTraceEnabled()) {
+                        LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), best.pollFirst().distance);
                     }
                 }
 
@@ -359,15 +359,15 @@ class HNSWIndex {
                     }
 
                     final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVector);
-                    if (LOGGER.isDebugEnabled()) {
-                        LOGGER.debug("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
+                    if (LOGGER.isTraceEnabled()) {
+                        LOGGER.trace("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
                     }
                     if (best.addIfCloserAndTrim(currentEdge, k)) {
-                        if (LOGGER.isDebugEnabled()) {
-                            LOGGER.debug("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
-                        }
                         // Plan to visit this vertex to check all of its edges also
                         candidates.add(currentEdge);
+                        if (LOGGER.isTraceEnabled()) {
+                            LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
+                        }
                     }
                 }
             }
@@ -422,7 +422,7 @@ public class HNSWExample {
             throw new IllegalStateException("Query vector didn't match data vector length! They cannot be compared!");
         }
         final Vertex queryVertex = new Vertex(queryVector);
-        LOGGER.info("Searching vertex: {}", Arrays.toString(queryVertex.getVector()));
+        LOGGER.info("Searching vertex..."); // , Arrays.toString(queryVertex.getVector()));
 
         if (LOGGER.isDebugEnabled()) {
             System.out.println();
@@ -433,7 +433,7 @@ public class HNSWExample {
                         .toList();
                 LOGGER.debug("Layer {} begins with {} nodes...", oLevel, vertices.size());
                 for (Vertex v : vertices) {
-                    LOGGER.debug("    - Node: {} @ {}, {} : {}", v.getMetadata("id"), oLevel, Arrays.toString(v.getVector()), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+                    LOGGER.debug("    - Node: {} @ {}, {}", v.getMetadata("id"), oLevel, CosineDistanceUtils.cosineSimilarity(queryVertex, v));
                     for (int level = 0; level <= v.getMaxLevel(); level++) {
                         LOGGER.debug("        - Edges @ {}: {} : {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")), CosineDistanceUtils.cosineSimilarity(v, queryVertex));
                     }
@@ -452,7 +452,7 @@ public class HNSWExample {
                 .limit(topK)
                 .toList();
         for (Vertex v : allVerticesDisplaySet) {
-            LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}, Vector: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v), Arrays.toString(v.getVector()));
+            LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
             for (int level = 0; level <= v.getMaxLevel(); level++) {
                 LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
             }
@@ -464,12 +464,12 @@ public class HNSWExample {
         LOGGER.info("...done. Accuracy out of {}:", allVertices.size());
         for (int i = 0; i < similarVertices.size(); i++) {
             final Vertex v = similarVertices.get(i);
-            LOGGER.info("    - #{} is {} @ {}", (i + 1), v.getMetadata("id"), allVertices.indexOf(v));
+            LOGGER.info("    - #{} is ID={} @ Brute-Force #{}", (i + 1), v.getMetadata("id"), (allVertices.indexOf(v) + 1));
         }
 
         System.out.println();
         for (Vertex v : similarVertices) {
-            LOGGER.info("Similar vertex: Metadata: {}, Distance: {}, Vector: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v), Arrays.toString(v.getVector()));
+            LOGGER.info("Similar vertex: Metadata: {}, Distance: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
             for (int level = 0; level <= v.getMaxLevel(); level++) {
                 LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
             }
