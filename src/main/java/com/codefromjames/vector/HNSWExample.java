@@ -58,8 +58,10 @@ class VertexDistance {
     @Override
     public String toString() {
         return "VertexDistance{" +
-                "vertex=" + vertex +
-                ", distance=" + distance +
+                "distance=" + distance +
+                ", level=" + vertex.getMaxLevel() +
+                ", metadata=" + vertex.getMetadata() +
+                ", vertex=" + vertex +
                 '}';
     }
 
@@ -144,9 +146,9 @@ class Vertex {
     @Override
     public String toString() {
         return "Vertex{" +
-                "vector=" + Arrays.toString(vector) +
-                ", metadata=" + metadata +
+                "metadata=" + metadata +
                 ", maxLevel=" + maxLevel +
+                ", vector=" + Arrays.toString(vector) +
                 ", edges=[" + edges.stream().map(x -> Integer.toString(x.size())).collect(Collectors.joining(",")) + ']' +
                 '}';
     }
@@ -438,14 +440,14 @@ public class HNSWExample {
                 .limit(topK * 3L)
                 .toList();
         for (Vertex v : allVertices) {
-            LOGGER.info("All vertex: {}, Metadata: {} @ {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+            LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}, Vector: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v), Arrays.toString(v.getVector()));
         }
 
         System.out.println();
         LOGGER.info("Index searching best matches...");
         final List<Vertex> similarVertices = index.search(queryVector, topK);
         for (Vertex v : similarVertices) {
-            LOGGER.info("Similar vertex: {}, Metadata: {}, Distance: {}", Arrays.toString(v.getVector()), v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+            LOGGER.info("Similar vertex: Metadata: {}, Distance: {}, Vector: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v), Arrays.toString(v.getVector()));
             for (int level = 0; level <= v.getMaxLevel(); level++) {
                 LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
             }
