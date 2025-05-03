@@ -395,7 +395,7 @@ public class HNSWExample {
 
         final int vectorWidth = 1000;
         LOGGER.info("Vectors generating... vector width = {}", vectorWidth);
-        final List<double[]> data = IntStream.range(0, 10_000)
+        final List<double[]> data = IntStream.range(0, 1_000)
                 .mapToObj(i -> randomVector(vectorWidth))
                 .toList();
 
