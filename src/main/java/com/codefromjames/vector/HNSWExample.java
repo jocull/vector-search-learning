@@ -239,10 +239,11 @@ class HNSWIndex {
             }
 
             final VertexDistanceHeap best = getVertexDistancesAtLayer(newVector, propagateBest, currentLevel);
+            LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
             // For nodes that are underneath us in the layer, associate newer or better peers
             for (VertexDistance vdNeighbor : best) {
                 // If the new vertex would exist in this level, create neighbors for it
-                if (level >= currentLevel) {
+                if (newVertex.getMaxLevel() >= currentLevel) {
                     newVertex.addEdge(currentLevel, vdNeighbor);
                 }
                 // Check the edges for this neighbor at the target level to see if this is an improvement.
@@ -381,6 +382,17 @@ class HNSWIndex {
                 .limit(k) // Clamp the EF_SEARCH to get the best set
                 .toList();
     }
+
+    @Override
+    public String toString() {
+        return "HNSWIndex{" +
+                "maxLevels=" + MAX_LEVEL +
+                ", probability=" + LEVEL_PROBABILITY +
+                ", efConstruction=" + EF_CONSTRUCTION +
+                ", efSearch=" + EF_SEARCH +
+                ", maxEdges=" + Vertex.ML +
+                '}';
+    }
 }
 
 public class HNSWExample {
@@ -396,6 +408,7 @@ public class HNSWExample {
 
     public static void main(String[] args) {
         final HNSWIndex index = new HNSWIndex();
+        LOGGER.info("HNSW settings: {}", index);
 
         final int vectorWidth = 1000;
         LOGGER.info("Vectors generating... vector width = {}", vectorWidth);
@@ -465,7 +478,10 @@ public class HNSWExample {
         System.out.println();
         LOGGER.info("Index searching best matches...");
         final List<Vertex> similarVertices = index.search(queryVector, topK);
-        LOGGER.info("...done. Accuracy out of {}:", allVertices.size());
+        LOGGER.info("...done.");
+
+        System.out.println();
+        LOGGER.info("Accuracy out of {}:", allVertices.size());
         for (int i = 0; i < similarVertices.size(); i++) {
             final Vertex v = similarVertices.get(i);
             LOGGER.info("    - #{} is ID={} @ Brute-Force #{}", (i + 1), v.getMetadata("id"), (allVertices.indexOf(v) + 1));
