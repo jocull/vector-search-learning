@@ -286,9 +286,7 @@ class HNSWIndex {
             }
 
             visited.add(current.vertex);
-            if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                return best;
-            }
+            best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
 
             for (VertexDistance edge : current.vertex.getEdges(level)) {
                 if (visited.contains(edge.vertex)) {
@@ -299,8 +297,6 @@ class HNSWIndex {
                 visited.add(currentEdge.vertex);
                 if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
                     candidates.add(currentEdge);
-                } else {
-                    return best;
                 }
             }
         }
@@ -345,7 +341,7 @@ class HNSWIndex {
 
             // Find the best neighbors in this level, searching from the entry point
             final Set<Vertex> visited = new HashSet<>();
-            while (!candidates.isEmpty() && best.size() < EF_SEARCH) {
+            while (!candidates.isEmpty()) {
                 final VertexDistance current = candidates.pollFirst();
                 if (visited.contains(current.vertex)) {
                     continue;
@@ -359,8 +355,6 @@ class HNSWIndex {
                     if (LOGGER.isTraceEnabled()) {
                         LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, current.vertex.getMetadata("id"), current.distance, best.size(), best.pollFirst().distance);
                     }
-                } else {
-                    break;
                 }
 
                 for (VertexDistance edge : current.vertex.getEdges(currentLevel)) {
@@ -378,8 +372,6 @@ class HNSWIndex {
                         if (LOGGER.isTraceEnabled()) {
                             LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
                         }
-                    } else {
-                        break;
                     }
                 }
             }
