@@ -222,11 +222,11 @@ class HNSWIndex {
     private static final Logger LOGGER = LoggerFactory.getLogger(HNSWIndex.class);
 
     static final Random RANDOM = new Random(261707535563309L); // Nice distribution off a recent run
-    private static final double LEVEL_PROBABILITY = 0.25;
-    private static final int MAX_LEVEL = 12;
+    private static final double LEVEL_PROBABILITY = 0.1;
+    private static final int MAX_LEVEL = 8;
 
-    private static int EF_CONSTRUCTION = 200;
-    private static int EF_SEARCH = 50;
+    private static int EF_CONSTRUCTION = 100;
+    private static int EF_SEARCH = 200;
 
     private final List<List<Vertex>> layers = new ArrayList<>();
 
@@ -432,9 +432,10 @@ public class HNSWExample {
         final HNSWIndex index = new HNSWIndex();
         LOGGER.info("HNSW settings: {}", index);
 
-        final int vectorWidth = 1000;
-        LOGGER.info("Vectors generating... vector width = {}", vectorWidth);
-        final List<double[]> data = IntStream.range(0, 1_000)
+        final int vectorWidth = 1_000;
+        final int vectorRange = 10_000;
+        LOGGER.info("Vectors generating... vector width = {} x range = {}", vectorWidth, vectorRange);
+        final List<double[]> data = IntStream.range(0, vectorRange)
                 .mapToObj(i -> randomVector(vectorWidth))
                 .toList();
 
