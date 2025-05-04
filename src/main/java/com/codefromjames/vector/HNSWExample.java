@@ -438,8 +438,10 @@ public class HNSWExample {
         final List<double[]> data = IntStream.range(0, vectorRange)
                 .mapToObj(i -> randomVector(vectorWidth))
                 .toList();
+        LOGGER.info("...done.");
 
-        LOGGER.info("...done. Layers generating...");
+        System.out.println();
+        LOGGER.info("Layers generating...");
         for (int i = 0; i < data.size(); i++) {
             final double[] vector = data.get(i);
             index.addVertex(vector, Map.of("id", i));
