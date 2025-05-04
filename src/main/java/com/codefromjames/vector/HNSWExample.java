@@ -468,12 +468,12 @@ public class HNSWExample {
         final List<Vertex> allVerticesDisplaySet = allVertices.stream()
                 .limit(topK)
                 .toList();
-        for (Vertex v : allVerticesDisplaySet) {
-            LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
-            for (int level = 0; level <= v.getMaxLevel(); level++) {
-                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
-            }
-        }
+//        for (Vertex v : allVerticesDisplaySet) {
+//            LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+//            for (int level = 0; level <= v.getMaxLevel(); level++) {
+//                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
+//            }
+//        }
 
         System.out.println();
         LOGGER.info("Index searching best matches...");
@@ -487,12 +487,12 @@ public class HNSWExample {
             LOGGER.info("    - #{} is ID={} @ Brute-Force #{}", (i + 1), v.getMetadata("id"), (allVertices.indexOf(v) + 1));
         }
 
-        System.out.println();
-        for (Vertex v : similarVertices) {
-            LOGGER.info("Similar vertex: Metadata: {}, Distance: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
-            for (int level = 0; level <= v.getMaxLevel(); level++) {
-                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
-            }
-        }
+//        System.out.println();
+//        for (Vertex v : similarVertices) {
+//            LOGGER.info("Similar vertex: Metadata: {}, Distance: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
+//            for (int level = 0; level <= v.getMaxLevel(); level++) {
+//                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
+//            }
+//        }
     }
 }
