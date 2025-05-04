@@ -19,6 +19,14 @@ class CosineDistanceUtils {
         return Math.sqrt(sum);
     }
 
+    static double dotProduct(double[] v1, double[] v2) {
+        double dotProduct = 0;
+        for (int i = 0; i < v1.length; i++) {
+            dotProduct += v1[i] * v2[i];
+        }
+        return dotProduct;
+    }
+
     static double cosineSimilarity(double[] v1, double[] v2) {
         double dotProduct = 0;
         for (int i = 0; i < v1.length; i++) {
@@ -46,13 +54,20 @@ class VertexDistance {
     final Vertex vertex;
     final double distance;
 
-    VertexDistance(Vertex v, double distance) {
-        this.vertex = v;
+    VertexDistance(Vertex source, double distance) {
+        this.vertex = source;
         this.distance = distance;
     }
 
-    VertexDistance(Vertex v, double[] target) {
-        this(v, CosineDistanceUtils.cosineDistance(v.getVector(), target));
+    VertexDistance(Vertex source, Vertex target) {
+        final double[] v1 = source.getVector();
+        final double[] v2 = target.getVector();
+        double dotProduct = CosineDistanceUtils.dotProduct(v1, v2);
+        final double norm1 = source.getNorm();
+        final double norm2 = target.getNorm();
+        double distance = 1 - dotProduct / (norm1 * norm2);
+        this.vertex = source;
+        this.distance = distance;
     }
 
     @Override
@@ -86,6 +101,7 @@ class Vertex {
     static final int ML = 32;
 
     private final double[] vector;
+    private final double norm;
     private final Map<String, Object> metadata;
     private final List<VertexDistanceHeap> edges;
     private int maxLevel;
@@ -96,6 +112,7 @@ class Vertex {
 
     public Vertex(double[] vector, Map<String, Object> metadata) {
         this.vector = vector;
+        this.norm = CosineDistanceUtils.norm(vector);
         this.metadata = new HashMap<>(metadata);
         this.maxLevel = 0;
         this.edges = new ArrayList<>();
@@ -129,6 +146,10 @@ class Vertex {
 
     public double[] getVector() {
         return vector;
+    }
+
+    public double getNorm() {
+        return norm;
     }
 
     public Map<String, Object> getMetadata() {
@@ -238,7 +259,7 @@ class HNSWIndex {
                 continue;
             }
 
-            final VertexDistanceHeap best = getVertexDistancesAtLayer(newVector, propagateBest, currentLevel);
+            final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
             LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
             // For nodes that are underneath us in the layer, associate newer or better peers
             for (VertexDistance vdNeighbor : best) {
@@ -263,7 +284,7 @@ class HNSWIndex {
         }
     }
 
-    private VertexDistanceHeap getVertexDistancesAtLayer(double[] newVector, Collection<VertexDistance> startingNodes, int level) {
+    private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Collection<VertexDistance> startingNodes, int level) {
         if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
             return new VertexDistanceHeap();
         }
@@ -276,7 +297,7 @@ class HNSWIndex {
             candidates.addAll(startingNodes);
         } else {
             // Find the best neighbors in this level, searching from the entry point
-            candidates.add(new VertexDistance(layers.get(level).get(0), newVector));
+            candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
 
         while (!candidates.isEmpty()) {
@@ -293,7 +314,7 @@ class HNSWIndex {
                     continue;
                 }
 
-                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVector);
+                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
                 visited.add(currentEdge.vertex);
                 if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
                     candidates.add(currentEdge);
@@ -322,6 +343,7 @@ class HNSWIndex {
     }
 
     public List<Vertex> search(double[] queryVector, int k) {
+        final Vertex queryVertex = new Vertex(queryVector);
         final VertexDistanceHeap best = new VertexDistanceHeap();
         for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
             if (layers.get(currentLevel).isEmpty()) {
@@ -332,7 +354,7 @@ class HNSWIndex {
             candidates.addAll(best);
             if (candidates.isEmpty()) {
                 // Start at the entry point of this layer if there was nothing to carry
-                final VertexDistance entryVd = new VertexDistance(layers.get(currentLevel).get(0), queryVector);
+                final VertexDistance entryVd = new VertexDistance(layers.get(currentLevel).get(0), queryVertex);
                 candidates.add(entryVd);
                 if (LOGGER.isTraceEnabled()) {
                     LOGGER.trace("[{}] Entry candidate: {} @ {}", currentLevel, entryVd.vertex.getMetadata("id"), entryVd.distance);
@@ -362,7 +384,7 @@ class HNSWIndex {
                         continue;
                     }
 
-                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVector);
+                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVertex);
                     if (LOGGER.isTraceEnabled()) {
                         LOGGER.trace("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
                     }
