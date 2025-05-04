@@ -260,7 +260,9 @@ class HNSWIndex {
             }
 
             final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
-            LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
+            if (LOGGER.isTraceEnabled()) {
+                LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
+            }
             // For nodes that are underneath us in the layer, associate newer or better peers
             for (VertexDistance vdNeighbor : best) {
                 // If the new vertex would exist in this level, create neighbors for it
