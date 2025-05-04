@@ -121,7 +121,7 @@ class Vertex {
     public void setMaxLevel(int level) {
         this.maxLevel = level;
         while (edges.size() <= level) {
-            edges.add(new VertexDistanceHeap());
+            edges.add(VertexDistanceHeap.create());
         }
     }
 
@@ -131,7 +131,7 @@ class Vertex {
 
     public boolean addEdge(int level, VertexDistance neighbor) {
         while (edges.size() <= level) {
-            edges.add(new VertexDistanceHeap());
+            edges.add(VertexDistanceHeap.create());
         }
         if (this == neighbor.vertex) {
             // Don't add self as a neighbor
@@ -179,15 +179,68 @@ class Vertex {
     }
 }
 
-class VertexDistanceHeap extends TreeSet<VertexDistance> {
-    private static final Comparator<VertexDistance> COMPARATOR =
-            Comparator.comparingDouble(vd -> vd.distance);
+interface VertexDistanceHeap extends Collection<VertexDistance> {
+    Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
 
-    public VertexDistanceHeap() {
+    static VertexDistanceHeap create() {
+        return new VertexDistanceArrayList();
+    }
+
+    VertexDistance pollFirst();
+
+    boolean addIfCloserAndTrim(VertexDistance current, int efSearch);
+}
+
+class VertexDistanceArrayList extends ArrayList<VertexDistance> implements VertexDistanceHeap {
+    public VertexDistanceArrayList() {
+        super(Vertex.ML + 1);
+    }
+
+    @Override
+    public VertexDistance pollFirst() {
+        if (isEmpty()) {
+            return null;
+        }
+        final VertexDistance first = get(0);
+        remove(0);
+        return first;
+    }
+
+    @Override
+    public boolean add(VertexDistance vd) {
+        if (contains(vd)) {
+            return false;
+        }
+        return super.add(vd);
+    }
+
+    @Override
+    public boolean addIfCloserAndTrim(VertexDistance vd, int size) {
+        assert size > -1;
+        if (size() < size
+                || last().distance > vd.distance) {
+            if (add(vd)) {
+                sort(COMPARATOR);
+                if (size() > size) {
+                    removeRange(size - 1, size() - 1);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private VertexDistance last() {
+        return get(size() - 1);
+    }
+}
+
+class VertexDistanceTreeSet extends TreeSet<VertexDistance> implements VertexDistanceHeap {
+    public VertexDistanceTreeSet() {
         super(COMPARATOR);
     }
 
-    public VertexDistanceHeap(Collection<? extends VertexDistance> c) {
+    public VertexDistanceTreeSet(Collection<? extends VertexDistance> c) {
         super(c);
         addAll(c);
     }
@@ -197,24 +250,12 @@ class VertexDistanceHeap extends TreeSet<VertexDistance> {
         if (size() < size
                 || last().distance > vd.distance) {
             add(vd);
-            trimMax(size);
+            while (size() > size) {
+                pollLast();
+            }
             return true;
         }
         return false;
-    }
-
-    public void trimMin(int size) {
-        assert size > -1;
-        while (size() > size) {
-            pollFirst();
-        }
-    }
-
-    public void trimMax(int size) {
-        assert size > -1;
-        while (size() > size) {
-            pollLast();
-        }
     }
 }
 
@@ -288,12 +329,12 @@ class HNSWIndex {
 
     private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Collection<VertexDistance> startingNodes, int level) {
         if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
-            return new VertexDistanceHeap();
+            return VertexDistanceHeap.create();
         }
 
         final Set<Vertex> visited = new HashSet<>();
-        final VertexDistanceHeap candidates = new VertexDistanceHeap();
-        final VertexDistanceHeap best = new VertexDistanceHeap();
+        final VertexDistanceHeap candidates = VertexDistanceHeap.create();
+        final VertexDistanceHeap best = VertexDistanceHeap.create();
         if (startingNodes != null && !startingNodes.isEmpty()) {
             // Find the best neighbors in this level, searching from the previous level's matches
             candidates.addAll(startingNodes);
@@ -346,12 +387,12 @@ class HNSWIndex {
 
     public List<Vertex> search(double[] queryVector, int k) {
         final Vertex queryVertex = new Vertex(queryVector);
-        final VertexDistanceHeap best = new VertexDistanceHeap();
+        final VertexDistanceHeap best = VertexDistanceHeap.create();
         for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
             if (layers.get(currentLevel).isEmpty()) {
                 continue;
             }
-            final VertexDistanceHeap candidates = new VertexDistanceHeap();
+            final VertexDistanceHeap candidates = VertexDistanceHeap.create();
             // Carry over best from the last layer rather than starting over
             candidates.addAll(best);
             if (candidates.isEmpty()) {
