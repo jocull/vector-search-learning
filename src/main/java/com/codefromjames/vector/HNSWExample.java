@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 class CosineDistanceUtils {
     private CosineDistanceUtils() {
@@ -179,21 +180,86 @@ class Vertex {
     }
 }
 
-interface VertexDistanceHeap extends Collection<VertexDistance> {
-    Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
-
+interface VertexDistanceHeap extends Iterable<VertexDistance> {
     static VertexDistanceHeap create() {
-        return new VertexDistanceArrayList();
+        return new VertexDistanceTreeSet();
     }
 
     VertexDistance pollFirst();
 
     boolean addIfCloserAndTrim(VertexDistance current, int efSearch);
+
+    boolean add(VertexDistance vd);
+
+    void addAll(Iterable<VertexDistance> vertexDistances);
+
+    boolean isEmpty();
+
+    Stream<VertexDistance> stream();
+
+    int size();
+}
+
+class VertexDistancePriorityQueueSet extends PriorityQueue<VertexDistance> implements VertexDistanceHeap {
+    private static final Comparator<VertexDistance> COMPARATOR_ASC = Comparator.comparingDouble(vd -> vd.distance);
+    private static final Comparator<VertexDistance> COMPARATOR_DESC = COMPARATOR_ASC.reversed();
+
+    private final PriorityQueue<VertexDistance> asc = new PriorityQueue<>(COMPARATOR_ASC);
+    private final PriorityQueue<VertexDistance> desc = new PriorityQueue<>(COMPARATOR_DESC);
+    private final Set<Vertex> contained = new HashSet<>();
+
+    public VertexDistancePriorityQueueSet() {
+        super(COMPARATOR_DESC);
+    }
+
+    public VertexDistancePriorityQueueSet(Collection<? extends VertexDistance> vertexDistances) {
+        this();
+        this.addAll(vertexDistances);
+    }
+
+    @Override
+    public Stream<VertexDistance> stream() {
+        return super.stream();
+    }
+
+    @Override
+    public VertexDistance pollFirst() {
+        // Which technically would mean give me the "best" value...
+        throw new UnsupportedOperationException(); // TODO: Well this kinda doesn't work well here...
+    }
+
+    @Override
+    public boolean addIfCloserAndTrim(VertexDistance current, int efSearch) {
+        return false;
+    }
+
+    @Override
+    public boolean add(VertexDistance vd) {
+        if (contained.add(vd.vertex)) {
+            super.add(vd);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public void addAll(Iterable<VertexDistance> vertexDistances) {
+        for (VertexDistance vd : vertexDistances) {
+            add(vd);
+        }
+    }
 }
 
 class VertexDistanceArrayList extends ArrayList<VertexDistance> implements VertexDistanceHeap {
+    private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
+
     public VertexDistanceArrayList() {
         super(Vertex.ML + 1);
+    }
+
+    @Override
+    public Stream<VertexDistance> stream() {
+        return super.stream();
     }
 
     @Override
@@ -212,6 +278,13 @@ class VertexDistanceArrayList extends ArrayList<VertexDistance> implements Verte
             return false;
         }
         return super.add(vd);
+    }
+
+    @Override
+    public void addAll(Iterable<VertexDistance> vertexDistances) {
+        for (VertexDistance vd : vertexDistances) {
+            add(vd);
+        }
     }
 
     @Override
@@ -236,6 +309,8 @@ class VertexDistanceArrayList extends ArrayList<VertexDistance> implements Verte
 }
 
 class VertexDistanceTreeSet extends TreeSet<VertexDistance> implements VertexDistanceHeap {
+    private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
+
     public VertexDistanceTreeSet() {
         super(COMPARATOR);
     }
@@ -243,6 +318,18 @@ class VertexDistanceTreeSet extends TreeSet<VertexDistance> implements VertexDis
     public VertexDistanceTreeSet(Collection<? extends VertexDistance> c) {
         super(c);
         addAll(c);
+    }
+
+    @Override
+    public Stream<VertexDistance> stream() {
+        return super.stream();
+    }
+
+    @Override
+    public void addAll(Iterable<VertexDistance> vertexDistances) {
+        for (VertexDistance vd : vertexDistances) {
+            add(vd);
+        }
     }
 
     public boolean addIfCloserAndTrim(VertexDistance vd, int size) {
@@ -327,7 +414,7 @@ class HNSWIndex {
         }
     }
 
-    private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Collection<VertexDistance> startingNodes, int level) {
+    private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Iterable<VertexDistance> startingNodes, int level) {
         if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
             return VertexDistanceHeap.create();
         }
@@ -335,10 +422,11 @@ class HNSWIndex {
         final Set<Vertex> visited = new HashSet<>();
         final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         final VertexDistanceHeap best = VertexDistanceHeap.create();
-        if (startingNodes != null && !startingNodes.isEmpty()) {
+        if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
             candidates.addAll(startingNodes);
-        } else {
+        }
+        if (candidates.isEmpty()) {
             // Find the best neighbors in this level, searching from the entry point
             candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
