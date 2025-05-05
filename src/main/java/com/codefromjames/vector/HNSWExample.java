@@ -29,10 +29,7 @@ class CosineDistanceUtils {
     }
 
     static double cosineSimilarity(double[] v1, double[] v2) {
-        double dotProduct = 0;
-        for (int i = 0; i < v1.length; i++) {
-            dotProduct += v1[i] * v2[i];
-        }
+        final double dotProduct = dotProduct(v1, v2);
         final double norm1 = norm(v1);
         final double norm2 = norm(v2);
         return dotProduct / (norm1 * norm2);
