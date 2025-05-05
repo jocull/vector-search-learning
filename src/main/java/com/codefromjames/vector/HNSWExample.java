@@ -1,5 +1,7 @@
 package com.codefromjames.vector;
 
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,7 +19,13 @@ class CosineDistanceUtils {
         for (double v : vector) {
             sum += v * v;
         }
-        return Math.sqrt(sum);
+
+        double nativeNorm;
+        try (INDArray vec = Nd4j.create(vector);) {
+            nativeNorm = vec.norm2().getDouble(0);
+        }
+
+        return sum;
     }
 
     static double dotProduct(double[] v1, double[] v2) {
@@ -25,6 +33,13 @@ class CosineDistanceUtils {
         for (int i = 0; i < v1.length; i++) {
             dotProduct += v1[i] * v2[i];
         }
+
+        double nativeDp;
+        try (INDArray vec1 = Nd4j.create(v1);
+             INDArray vec2 = Nd4j.create(v2);) {
+            nativeDp = vec1.mmul(vec2).getDouble(0);
+        }
+
         return dotProduct;
     }
 
@@ -45,11 +60,11 @@ class CosineDistanceUtils {
     }
 
     static double cosineDistance(double[] v1, double[] v2) {
-        return 1 - cosineSimilarity(v1, v2);
+        return 1.0 - cosineSimilarity(v1, v2);
     }
 
     static double cosineDistance(Vertex vtx1, Vertex vtx2) {
-        return 1 - cosineSimilarity(vtx1, vtx2);
+        return 1.0 - cosineSimilarity(vtx1, vtx2);
     }
 }
 
@@ -560,7 +575,7 @@ public class HNSWExample {
         LOGGER.info("HNSW settings: {}", index);
 
         final int vectorWidth = 1_000;
-        final int vectorRange = 10_000;
+        final int vectorRange = 100_000;
         LOGGER.info("Vectors generating... vector width = {} x range = {}", vectorWidth, vectorRange);
         final List<double[]> data = IntStream.range(0, vectorRange)
                 .mapToObj(i -> randomVector(vectorWidth))
