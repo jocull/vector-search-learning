@@ -35,16 +35,21 @@ class CosineDistanceUtils {
         return dotProduct / (norm1 * norm2);
     }
 
-    static double cosineSimilarity(Vertex v1, Vertex v2) {
-        return cosineSimilarity(v1.getVector(), v2.getVector());
+    static double cosineSimilarity(Vertex vtx1, Vertex vtx2) {
+        final double[] v1 = vtx1.getVector();
+        final double[] v2 = vtx2.getVector();
+        final double dotProduct = dotProduct(v1, v2);
+        final double norm1 = vtx1.getNorm();
+        final double norm2 = vtx2.getNorm();
+        return dotProduct / (norm1 * norm2);
     }
 
     static double cosineDistance(double[] v1, double[] v2) {
         return 1 - cosineSimilarity(v1, v2);
     }
 
-    static double cosineDistance(Vertex v1, Vertex v2) {
-        return cosineDistance(v1.getVector(), v2.getVector());
+    static double cosineDistance(Vertex vtx1, Vertex vtx2) {
+        return 1 - cosineSimilarity(vtx1, vtx2);
     }
 }
 
@@ -58,14 +63,8 @@ class VertexDistance {
     }
 
     VertexDistance(Vertex source, Vertex target) {
-        final double[] v1 = source.getVector();
-        final double[] v2 = target.getVector();
-        double dotProduct = CosineDistanceUtils.dotProduct(v1, v2);
-        final double norm1 = source.getNorm();
-        final double norm2 = target.getNorm();
-        double distance = 1 - dotProduct / (norm1 * norm2);
         this.vertex = source;
-        this.distance = distance;
+        this.distance = CosineDistanceUtils.cosineDistance(source, target);
     }
 
     @Override
