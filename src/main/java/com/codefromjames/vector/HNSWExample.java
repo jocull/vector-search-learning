@@ -122,11 +122,11 @@ class Vertex {
         }
     }
 
-    public VertexDistanceHeap getEdges(int level) {
+    public synchronized VertexDistanceHeap getEdges(int level) {
         return edges.get(level);
     }
 
-    public boolean addEdge(int level, VertexDistance neighbor) {
+    public synchronized boolean addEdge(int level, VertexDistance neighbor) {
         while (edges.size() <= level) {
             edges.add(VertexDistanceHeap.create());
         }
@@ -166,7 +166,7 @@ class Vertex {
     }
 
     @Override
-    public String toString() {
+    public synchronized String toString() {
         return "Vertex{" +
                 "metadata=" + metadata +
                 ", maxLevel=" + maxLevel +
@@ -370,7 +370,7 @@ class HNSWIndex {
             layers.add(new ArrayList<>());
         }
 
-        final Set<Vertex> remapped = new HashSet<>();
+        final Set<Vertex> remapped = Collections.synchronizedSet(new HashSet<>());
         VertexDistanceHeap propagateBest = null;
         for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
             // If there are no nodes in this layer...
@@ -388,18 +388,18 @@ class HNSWIndex {
                 LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
             }
             // For nodes that are underneath us in the layer, associate newer or better peers
-            for (VertexDistance vdNeighbor : best) {
+            final int cl = currentLevel;
+            best.stream().parallel().forEach(vdNeighbor -> {
                 // If the new vertex would exist in this level, create neighbors for it
-                if (newVertex.getMaxLevel() >= currentLevel) {
-                    newVertex.addEdge(currentLevel, vdNeighbor);
+                if (newVertex.getMaxLevel() >= cl) {
+                    newVertex.addEdge(cl, vdNeighbor);
                 }
                 // Check the edges for this neighbor at the target level to see if this is an improvement.
                 // Don't process nodes we've already touched again if they remain the best from a previous layer.
-                if (!remapped.contains(vdNeighbor.vertex)) {
-                    remapped.add(vdNeighbor.vertex);
+                if (remapped.add(vdNeighbor.vertex)) {
                     vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
                 }
-            }
+            });
 
             // Insert the new node into the level it belongs to
             if (currentLevel == newVertex.getMaxLevel()) {
@@ -415,7 +415,7 @@ class HNSWIndex {
             return VertexDistanceHeap.create();
         }
 
-        final Set<Vertex> visited = new HashSet<>();
+        final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
         final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         final VertexDistanceHeap best = VertexDistanceHeap.create();
         if (startingNodes != null) {
@@ -436,17 +436,19 @@ class HNSWIndex {
             visited.add(current.vertex);
             best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
 
-            for (VertexDistance edge : current.vertex.getEdges(level)) {
+            current.vertex.getEdges(level).stream().parallel().forEach(edge -> {
                 if (visited.contains(edge.vertex)) {
-                    continue;
+                    return;
                 }
 
                 final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
                 visited.add(currentEdge.vertex);
-                if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                    candidates.add(currentEdge);
+                synchronized (best) {
+                    if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                        candidates.add(currentEdge);
+                    }
                 }
-            }
+            });
         }
         return best;
     }
@@ -560,7 +562,7 @@ public class HNSWExample {
         LOGGER.info("HNSW settings: {}", index);
 
         final int vectorWidth = 1_000;
-        final int vectorRange = 10_000;
+        final int vectorRange = 100_000;
         LOGGER.info("Vectors generating... vector width = {} x range = {}", vectorWidth, vectorRange);
         final List<double[]> data = IntStream.range(0, vectorRange)
                 .mapToObj(i -> randomVector(vectorWidth))
