@@ -17,6 +17,25 @@ dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.13")
 }
 
+// Set JDK version and enable preview features
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+tasks.compileJava {
+    options.compilerArgs.add("--enable-preview")
+    options.compilerArgs.add("--add-modules")
+    options.compilerArgs.add("jdk.incubator.vector")
+}
+
+tasks.compileTestJava {
+    options.compilerArgs.add("--enable-preview")
+    options.compilerArgs.add("--add-modules")
+    options.compilerArgs.add("jdk.incubator.vector")
+}
+
 tasks.test {
     useJUnitPlatform()
 }
