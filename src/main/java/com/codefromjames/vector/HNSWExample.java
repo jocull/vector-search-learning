@@ -23,24 +23,47 @@ class CosineDistanceUtils {
         return Math.sqrt(sum);
     }
 
-    private static final VectorSpecies<Double> SPECIES = DoubleVector.SPECIES_256;
+    private static boolean areEqual(double a, double b, double epsilon) {
+        return Math.abs(a - b) <= epsilon;
+    }
+
+    static double dotProduct_jvm(double[] v1, double[] v2) {
+        double dotProduct = 0;
+        for (int i = 0; i < v1.length; i++) {
+            dotProduct += v1[i] * v2[i];
+        }
+        return dotProduct;
+    }
+
+    private static final VectorSpecies<Double> SPECIES = DoubleVector.SPECIES_PREFERRED;
 
     public static double dotProduct(double[] a, double[] b) {
         int i = 0;
         long len = a.length;
         DoubleVector sum = DoubleVector.zero(SPECIES);
-
         for (; i <= len - SPECIES.length(); i += SPECIES.length()) {
             DoubleVector va = DoubleVector.fromArray(SPECIES, a, i);
             DoubleVector vb = DoubleVector.fromArray(SPECIES, b, i);
             sum = sum.add(va.mul(vb));
         }
 
-        double result = sum.reduceLanes(VectorOperators.ADD);
+        // Deal with any remainder if vector width % SIMD width != 0
+        double dotProduct = sum.reduceLanes(VectorOperators.ADD);
         for (; i < len; i++) {
-            result += a[i] * b[i];
+            dotProduct += a[i] * b[i];
         }
-        return result;
+
+//        final double dotProductJvm = dotProduct_jvm(a, b);
+//        final double epsilon = 0.00001;
+//        if (!areEqual(dotProduct, dotProductJvm, epsilon)) {
+//            System.out.println(dotProduct);
+//            System.out.println(dotProductJvm);
+//            System.out.println(epsilon);
+//            System.out.println(Math.abs(dotProduct - dotProductJvm));
+//            throw new IllegalStateException("dotProduct result is not equal to JVM result: " + dotProduct + " vs " + dotProductJvm + " ... diff = " + Math.abs(dotProduct - dotProductJvm));
+//        }
+
+        return dotProduct;
     }
 
     static double cosineSimilarity(double[] v1, double[] v2) {
