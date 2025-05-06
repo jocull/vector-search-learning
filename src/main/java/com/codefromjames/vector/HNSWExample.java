@@ -570,6 +570,32 @@ public class HNSWExample {
         LOGGER.info("...done.");
 
         System.out.println();
+        LOGGER.info("Messing around...");
+        for (int i = 0; i < data.size(); i++) {
+            for (int j = 0; j < data.size(); j++) {
+                if (i == j) {
+                    continue; // skip self
+                }
+                final double[] outer = data.get(i);
+                final double[] inner = data.get(j);
+
+                final Vertex vOuter = new Vertex(outer);
+                final Vertex vInner = new Vertex(inner);
+                final VertexDistance distance = new VertexDistance(vOuter, vInner);
+                if (distance.distance > 10) { // never, but force distance to be used
+                    if (LOGGER.isTraceEnabled()) {
+                        LOGGER.trace("It happened {}", distance.distance);
+                    }
+                }
+
+                if (j % 100_000 == 0) {
+                    LOGGER.info("{}, {}", i, j);
+                }
+            }
+        }
+        LOGGER.info("...done.");
+
+        System.out.println();
         LOGGER.info("Layers generating...");
         for (int i = 0; i < data.size(); i++) {
             final double[] vector = data.get(i);
