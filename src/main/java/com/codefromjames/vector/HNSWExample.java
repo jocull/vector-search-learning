@@ -349,8 +349,8 @@ class HNSWIndex {
     private static final double LEVEL_PROBABILITY = 0.1;
     private static final int MAX_LEVEL = 8;
 
-    private static int EF_CONSTRUCTION = 100;
-    private static int EF_SEARCH = 200;
+    static int EF_CONSTRUCTION = 100;
+    static int EF_SEARCH = 200;
 
     private final List<List<Vertex>> layers = new ArrayList<>();
 
@@ -572,23 +572,27 @@ public class HNSWExample {
         System.out.println();
         LOGGER.info("Messing around...");
         for (int i = 0; i < data.size(); i++) {
+            final double[] outer = data.get(i);
+            final Vertex vOuter = new Vertex(outer);
             for (int j = 0; j < data.size(); j++) {
                 if (i == j) {
                     continue; // skip self
                 }
-                final double[] outer = data.get(i);
                 final double[] inner = data.get(j);
-
-                final Vertex vOuter = new Vertex(outer);
                 final Vertex vInner = new Vertex(inner);
-                final VertexDistance distance = new VertexDistance(vOuter, vInner);
-                if (distance.distance > 10) { // never, but force distance to be used
-                    if (LOGGER.isTraceEnabled()) {
-                        LOGGER.trace("It happened {}", distance.distance);
-                    }
-                }
-
-                if (j % 100_000 == 0) {
+                IntStream.range(0, HNSWIndex.EF_CONSTRUCTION)
+                        .parallel()
+                        .forEach(c -> {
+                            for (int k = 0; k < Vertex.ML; k++) {
+                                final VertexDistance distance = new VertexDistance(vOuter, vInner);
+                                if (distance.distance > 10) { // never, but force distance to be used
+                                    if (LOGGER.isTraceEnabled()) {
+                                        LOGGER.trace("It happened {}", distance.distance);
+                                    }
+                                }
+                            }
+                        });
+                if (j % 100 == 0) {
                     LOGGER.info("{}, {}", i, j);
                 }
             }
