@@ -1,5 +1,8 @@
 package com.codefromjames.vector;
 
+import jdk.incubator.vector.DoubleVector;
+import jdk.incubator.vector.VectorOperators;
+import jdk.incubator.vector.VectorSpecies;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,12 +23,24 @@ class CosineDistanceUtils {
         return Math.sqrt(sum);
     }
 
-    static double dotProduct(double[] v1, double[] v2) {
-        double dotProduct = 0;
-        for (int i = 0; i < v1.length; i++) {
-            dotProduct += v1[i] * v2[i];
+    private static final VectorSpecies<Double> SPECIES = DoubleVector.SPECIES_256;
+
+    public static double dotProduct(double[] a, double[] b) {
+        int i = 0;
+        long len = a.length;
+        DoubleVector sum = DoubleVector.zero(SPECIES);
+
+        for (; i <= len - SPECIES.length(); i += SPECIES.length()) {
+            DoubleVector va = DoubleVector.fromArray(SPECIES, a, i);
+            DoubleVector vb = DoubleVector.fromArray(SPECIES, b, i);
+            sum = sum.add(va.mul(vb));
         }
-        return dotProduct;
+
+        double result = sum.reduceLanes(VectorOperators.ADD);
+        for (; i < len; i++) {
+            result += a[i] * b[i];
+        }
+        return result;
     }
 
     static double cosineSimilarity(double[] v1, double[] v2) {
@@ -560,7 +575,7 @@ public class HNSWExample {
         LOGGER.info("HNSW settings: {}", index);
 
         final int vectorWidth = 1_000;
-        final int vectorRange = 10_000;
+        final int vectorRange = 100_000;
         LOGGER.info("Vectors generating... vector width = {} x range = {}", vectorWidth, vectorRange);
         final List<double[]> data = IntStream.range(0, vectorRange)
                 .mapToObj(i -> randomVector(vectorWidth))
