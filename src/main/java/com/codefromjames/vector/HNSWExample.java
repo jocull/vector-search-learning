@@ -1,6 +1,7 @@
 package com.codefromjames.vector;
 
 import jdk.incubator.vector.DoubleVector;
+import jdk.incubator.vector.VectorMask;
 import jdk.incubator.vector.VectorOperators;
 import jdk.incubator.vector.VectorSpecies;
 import org.slf4j.Logger;
@@ -12,58 +13,31 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 class CosineDistanceUtils {
+    private static final VectorSpecies<Double> SPECIES = DoubleVector.SPECIES_PREFERRED;
+
     private CosineDistanceUtils() {
     }
 
     static double norm(double[] vector) {
-        double sum = 0;
-        for (double v : vector) {
-            sum += v * v;
+        DoubleVector sumVec = DoubleVector.zero(SPECIES);
+        for (int i = 0; i <= vector.length; i += SPECIES.length()) {
+            final VectorMask<Double> mask = SPECIES.indexInRange(i, vector.length);
+            final DoubleVector vec = DoubleVector.fromArray(SPECIES, vector, i, mask);
+            sumVec = sumVec.add(vec.mul(vec));
         }
+        final double sum = sumVec.reduceLanes(VectorOperators.ADD);
         return Math.sqrt(sum);
     }
 
-    private static boolean areEqual(double a, double b, double epsilon) {
-        return Math.abs(a - b) <= epsilon;
-    }
-
-    static double dotProduct_jvm(double[] v1, double[] v2) {
-        double dotProduct = 0;
-        for (int i = 0; i < v1.length; i++) {
-            dotProduct += v1[i] * v2[i];
-        }
-        return dotProduct;
-    }
-
-    private static final VectorSpecies<Double> SPECIES = DoubleVector.SPECIES_PREFERRED;
-
     public static double dotProduct(double[] a, double[] b) {
-        int i = 0;
-        long len = a.length;
-        DoubleVector sum = DoubleVector.zero(SPECIES);
-        for (; i <= len - SPECIES.length(); i += SPECIES.length()) {
-            DoubleVector va = DoubleVector.fromArray(SPECIES, a, i);
-            DoubleVector vb = DoubleVector.fromArray(SPECIES, b, i);
-            sum = sum.add(va.mul(vb));
+        DoubleVector sumVec = DoubleVector.zero(SPECIES);
+        for (int i = 0; i <= a.length; i += SPECIES.length()) {
+            final VectorMask<Double> mask = SPECIES.indexInRange(i, a.length);
+            final DoubleVector va = DoubleVector.fromArray(SPECIES, a, i, mask);
+            final DoubleVector vb = DoubleVector.fromArray(SPECIES, b, i, mask);
+            sumVec = sumVec.add(va.mul(vb));
         }
-
-        // Deal with any remainder if vector width % SIMD width != 0
-        double dotProduct = sum.reduceLanes(VectorOperators.ADD);
-        for (; i < len; i++) {
-            dotProduct += a[i] * b[i];
-        }
-
-//        final double dotProductJvm = dotProduct_jvm(a, b);
-//        final double epsilon = 0.00001;
-//        if (!areEqual(dotProduct, dotProductJvm, epsilon)) {
-//            System.out.println(dotProduct);
-//            System.out.println(dotProductJvm);
-//            System.out.println(epsilon);
-//            System.out.println(Math.abs(dotProduct - dotProductJvm));
-//            throw new IllegalStateException("dotProduct result is not equal to JVM result: " + dotProduct + " vs " + dotProductJvm + " ... diff = " + Math.abs(dotProduct - dotProductJvm));
-//        }
-
-        return dotProduct;
+        return sumVec.reduceLanes(VectorOperators.ADD);
     }
 
     static double cosineSimilarity(double[] v1, double[] v2) {
@@ -612,6 +586,9 @@ public class HNSWExample {
         for (int i = 0; i < data.size(); i++) {
             final double[] vector = data.get(i);
             index.addVertex(vector, Map.of("id", i));
+            if (i > 0 && i % 1000 == 0) {
+                LOGGER.info("{}...", i);
+            }
         }
         LOGGER.info("...done.");
 
