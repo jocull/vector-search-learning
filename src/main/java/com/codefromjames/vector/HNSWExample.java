@@ -584,6 +584,9 @@ public class HNSWExample {
         for (int i = 0; i < data.size(); i++) {
             final double[] vector = data.get(i);
             index.addVertex(vector, Map.of("id", i));
+            if (i > 0 && i % 1000 == 0) {
+                LOGGER.info("{}...", i);
+            }
         }
         LOGGER.info("...done.");
 
