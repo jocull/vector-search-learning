@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -196,41 +197,97 @@ interface VertexDistanceHeap extends Iterable<VertexDistance> {
     int size();
 }
 
-class VertexDistanceTreeSet extends TreeSet<VertexDistance> implements VertexDistanceHeap {
+class VertexDistanceTreeSet implements VertexDistanceHeap {
     private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
 
+    private final ReentrantLock lock = new ReentrantLock();
+    private final TreeSet<VertexDistance> delegate = new TreeSet<>(COMPARATOR);
+
     public VertexDistanceTreeSet() {
-        super(COMPARATOR);
     }
 
     public VertexDistanceTreeSet(Collection<? extends VertexDistance> c) {
-        super(c);
-        addAll(c);
+        delegate.addAll(c);
     }
 
     @Override
     public Stream<VertexDistance> stream() {
-        return super.stream();
+        return delegate.stream();
+    }
+
+    @Override
+    public VertexDistance pollFirst() {
+        try {
+            lock.lock();
+            return delegate.pollFirst();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public boolean add(VertexDistance vd) {
+        try {
+            lock.lock();
+            return delegate.add(vd);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public boolean isEmpty() {
+        try {
+            lock.lock();
+            return delegate.isEmpty();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public int size() {
+        try {
+            lock.lock();
+            return delegate.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Iterator<VertexDistance> iterator() {
+        return delegate.iterator();
     }
 
     @Override
     public void addAll(Iterable<VertexDistance> vertexDistances) {
-        for (VertexDistance vd : vertexDistances) {
-            add(vd);
+        try {
+            lock.lock();
+            for (VertexDistance vd : vertexDistances) {
+                delegate.add(vd);
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
+    @Override
     public boolean addIfCloserAndTrim(VertexDistance vd, int size) {
-        assert size > -1;
-        if (size() < size
-                || last().distance > vd.distance) {
-            add(vd);
-            while (size() > size) {
-                pollLast();
+        try {
+            lock.lock();
+            if (delegate.size() < size
+                    || delegate.last().distance > vd.distance) {
+                delegate.add(vd);
+                while (delegate.size() > size) {
+                    delegate.pollLast();
+                }
+                return true;
             }
-            return true;
+            return false;
+        } finally {
+            lock.unlock();
         }
-        return false;
     }
 }
 
@@ -335,10 +392,8 @@ class HNSWIndex {
 
                 final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
                 visited.add(currentEdge.vertex);
-                synchronized (best) {
-                    if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                        candidates.add(currentEdge);
-                    }
+                if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                    candidates.add(currentEdge);
                 }
             });
         }
