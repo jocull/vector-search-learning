@@ -4,6 +4,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -174,6 +179,83 @@ class Vertex {
                 ", vector=" + Arrays.toString(vector) +
                 ", edges=[" + edges.stream().map(x -> Integer.toString(x.size())).collect(Collectors.joining(",")) + ']' +
                 '}';
+    }
+}
+
+class VertexDistancePriorityQueue implements AutoCloseable {
+    private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
+
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition newItem = lock.newCondition();
+    private final PriorityQueue<VertexDistance> delegate = new PriorityQueue<>(COMPARATOR);
+    private volatile boolean closed = false;
+
+    public boolean isClosed() {
+        return closed;
+    }
+
+    public void close() {
+        try {
+            lock.lock();
+            closed = true;
+            newItem.signalAll();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public int size() {
+        try {
+            lock.lock();
+            return delegate.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean isEmpty() {
+        try {
+            lock.lock();
+            return delegate.isEmpty();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void add(VertexDistance vertexDistance) {
+        try {
+            lock.lock();
+            delegate.add(vertexDistance);
+            newItem.signal();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void addAll(Iterable<VertexDistance> vertexDistances) {
+        try {
+            lock.lock();
+            for (VertexDistance vd : vertexDistances) {
+                delegate.add(vd);
+                newItem.signal();
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public VertexDistance pollFirst() {
+        try {
+            lock.lock();
+            while (delegate.isEmpty() && !closed) {
+                newItem.await();
+            }
+            return delegate.poll();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            lock.unlock();
+        }
     }
 }
 
@@ -365,7 +447,7 @@ class HNSWIndex {
         }
 
         final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
-        final VertexDistanceHeap candidates = VertexDistanceHeap.create();
+        final VertexDistancePriorityQueue candidates = new VertexDistancePriorityQueue();
         final VertexDistanceHeap best = VertexDistanceHeap.create();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
@@ -376,28 +458,52 @@ class HNSWIndex {
             candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
 
-        while (!candidates.isEmpty()) {
-            final VertexDistance current = candidates.pollFirst();
-            if (visited.contains(current.vertex)) {
-                continue;
-            }
+        final AtomicInteger candidateBalance = new AtomicInteger(candidates.size());
+        final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+        IntStream.range(0, Runtime.getRuntime().availableProcessors())
+                .<Runnable>mapToObj(i -> () -> {
+                    while (true) {
+                        final VertexDistance current = candidates.pollFirst();
+                        if (candidates.isClosed()) {
+                            return;
+                        }
 
-            visited.add(current.vertex);
-            best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+                        final int candidatesLeft = candidateBalance.decrementAndGet();
+                        if (!visited.add(current.vertex)) {
+                            if (candidatesLeft == 0) {
+                                return;
+                            }
+                            continue;
+                        }
 
+                        best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+                        for (VertexDistance edge : current.vertex.getEdges(level)) {
+                            if (visited.contains(edge.vertex)) {
+                                continue;
+                            }
 
-            for (VertexDistance edge : current.vertex.getEdges(level)) {
-                if (visited.contains(edge.vertex)) {
-                    continue;
-                }
+                            final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                            visited.add(currentEdge.vertex);
+                            if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                                candidates.add(currentEdge);
+                            }
+                        }
 
-                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                visited.add(currentEdge.vertex);
-                if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                    candidates.add(currentEdge);
-                }
-            }
-        }
+                        if (candidateBalance.get() == 0) {
+                            return;
+                        }
+                    }
+                })
+                .map(executorService::submit)
+                .toList()
+                .forEach(f -> {
+                    try {
+                        f.get();
+                    } catch (InterruptedException | ExecutionException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+        executorService.shutdown();
         return best;
     }
 
