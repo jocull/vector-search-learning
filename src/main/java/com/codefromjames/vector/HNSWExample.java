@@ -6,7 +6,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
-import java.util.concurrent.RecursiveTask;
+import java.util.concurrent.RecursiveAction;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -127,6 +127,10 @@ class Vertex {
     }
 
     public synchronized VertexDistanceHeap getEdges(int level) {
+        if (level > edges.size()) {
+            return VertexDistanceHeap.create(); // TODO: ughhhh workaround, I hate it
+        }
+
         return edges.get(level);
     }
 
@@ -362,45 +366,55 @@ class HNSWIndex {
         }
     }
 
-    static class GraphTraversalTask extends RecursiveTask<Void> {
+    static class GraphTraversalTask extends RecursiveAction {
+        private final int level;
+        private final Vertex target;
+        private final VertexDistanceHeap candidates;
         private final VertexDistanceHeap best;
         private final Set<Vertex> visited;
-        private final VertexDistance current;
-        private final int level;
 
-        public GraphTraversalTask(VertexDistance current, int level, VertexDistanceHeap best, Set<Vertex> visited) {
-            this.current = current;
+        public GraphTraversalTask(int level,
+                                  Vertex target,
+                                  VertexDistanceHeap candidates,
+                                  VertexDistanceHeap best,
+                                  Set<Vertex> visited) {
             this.level = level;
+            this.target = target;
+            this.candidates = candidates;
             this.best = best;
             this.visited = visited;
         }
 
         @Override
-        protected Void compute() {
-            if (current.vertex == null || !visited.add(current.vertex)) {
+        protected void compute() {
+            final VertexDistance candidate = candidates.pollFirst();
+            if (candidate == null
+                    || candidate.vertex == null
+                    || !visited.add(candidate.vertex)) {
                 // Empty or already visited
-                return null;
+                return;
             }
 
             // Update best heap if this vertex is better
+            final VertexDistance current = new VertexDistance(target, candidate.vertex);
             best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // Replace EF_CONSTRUCTION with actual value
 
             // Fork tasks for each edge in this level
             final List<GraphTraversalTask> tasks = new ArrayList<>(Vertex.ML);
-            for (VertexDistance edge : current.vertex.getEdges(level)) {
-                final VertexDistance currentEdge = new VertexDistance(current.vertex, edge.vertex);
+            for (VertexDistance edge : candidate.vertex.getEdges(level)) {
+                final VertexDistance currentEdge = new VertexDistance(target, edge.vertex);
                 visited.add(currentEdge.vertex);
 
                 if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
                     // Fork a new task to go process the better candidates here
-                    final GraphTraversalTask task = new GraphTraversalTask(currentEdge, level, best, visited);
+                    candidates.add(currentEdge);
+                    final GraphTraversalTask task = new GraphTraversalTask(level, target, candidates, best, visited);
                     task.fork();
                     tasks.add(task);
                 }
             }
             // Wait for all of them
             tasks.forEach(ForkJoinTask::join);
-            return null;
         }
     }
 
@@ -410,49 +424,29 @@ class HNSWIndex {
         }
 
         final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
+        final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         final VertexDistanceHeap best = VertexDistanceHeap.create();
-
         final List<GraphTraversalTask> tasks = new ArrayList<>();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
             for (VertexDistance startingNode : startingNodes) {
-                final GraphTraversalTask task = new GraphTraversalTask(startingNode, level, best, visited);
+                candidates.add(startingNode);
+                final GraphTraversalTask task = new GraphTraversalTask(level, newVertex, candidates, best, visited);
                 ForkJoinPool.commonPool().submit(task);
                 tasks.add(task);
             }
         }
-        if (tasks.isEmpty()) {
+        if (candidates.isEmpty()) {
             // Find the best neighbors in this level, searching from the entry point
             final VertexDistance startingNode = new VertexDistance(layers.get(level).get(0), newVertex);
-            final GraphTraversalTask task = new GraphTraversalTask(startingNode, level, best, visited);
+            candidates.add(startingNode);
+            final GraphTraversalTask task = new GraphTraversalTask(level, newVertex, candidates, best, visited);
             ForkJoinPool.commonPool().submit(task);
             tasks.add(task);
         }
         for (GraphTraversalTask task : tasks) {
             task.join(); // wait...
         }
-
-//        while (!candidates.isEmpty()) {
-//            final VertexDistance current = candidates.pollFirst();
-//            if (visited.contains(current.vertex)) {
-//                continue;
-//            }
-//
-//            visited.add(current.vertex);
-//            best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
-//
-//            current.vertex.getEdges(level).stream().parallel().forEach(edge -> {
-//                if (visited.contains(edge.vertex)) {
-//                    return;
-//                }
-//
-//                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-//                visited.add(currentEdge.vertex);
-//                if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-//                    candidates.add(currentEdge);
-//                }
-//            });
-//        }
         return best;
     }
 
