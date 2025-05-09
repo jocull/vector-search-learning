@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveTask;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -361,7 +362,7 @@ class HNSWIndex {
         }
     }
 
-    class GraphTraversalTask extends RecursiveTask<Void> {
+    static class GraphTraversalTask extends RecursiveTask<Void> {
         private final VertexDistanceHeap best;
         private final Set<Vertex> visited;
         private final VertexDistance current;
@@ -376,27 +377,29 @@ class HNSWIndex {
 
         @Override
         protected Void compute() {
-            if (current.vertex == null || visited.contains(current.vertex)) {
+            if (current.vertex == null || !visited.add(current.vertex)) {
+                // Empty or already visited
                 return null;
             }
-
-            // Mark as visited
-            visited.add(current.vertex);
 
             // Update best heap if this vertex is better
             best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // Replace EF_CONSTRUCTION with actual value
 
             // Fork tasks for each edge in this level
+            final List<GraphTraversalTask> tasks = new ArrayList<>(Vertex.ML);
             for (VertexDistance edge : current.vertex.getEdges(level)) {
                 final VertexDistance currentEdge = new VertexDistance(current.vertex, edge.vertex);
                 visited.add(currentEdge.vertex);
+
                 if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
                     // Fork a new task to go process the better candidates here
-                    GraphTraversalTask task = new GraphTraversalTask(currentEdge, level, best, visited);
+                    final GraphTraversalTask task = new GraphTraversalTask(currentEdge, level, best, visited);
                     task.fork();
-                    // TODO: NEED TO JOIN ON THESE SUBTASKS?
+                    tasks.add(task);
                 }
             }
+            // Wait for all of them
+            tasks.forEach(ForkJoinTask::join);
             return null;
         }
     }
@@ -409,7 +412,7 @@ class HNSWIndex {
         final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
         final VertexDistanceHeap best = VertexDistanceHeap.create();
 
-        List<GraphTraversalTask> tasks = new ArrayList<>();
+        final List<GraphTraversalTask> tasks = new ArrayList<>();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
             for (VertexDistance startingNode : startingNodes) {
