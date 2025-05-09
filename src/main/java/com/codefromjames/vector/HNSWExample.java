@@ -338,7 +338,7 @@ class HNSWIndex {
             }
             // For nodes that are underneath us in the layer, associate newer or better peers
             final int cl = currentLevel;
-            best.stream().parallel().forEach(vdNeighbor -> {
+            for (VertexDistance vdNeighbor : best) {
                 // If the new vertex would exist in this level, create neighbors for it
                 if (newVertex.getMaxLevel() >= cl) {
                     newVertex.addEdge(cl, vdNeighbor);
@@ -348,7 +348,7 @@ class HNSWIndex {
                 if (remapped.add(vdNeighbor.vertex)) {
                     vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
                 }
-            });
+            }
 
             // Insert the new node into the level it belongs to
             if (currentLevel == newVertex.getMaxLevel()) {
@@ -385,9 +385,10 @@ class HNSWIndex {
             visited.add(current.vertex);
             best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
 
-            current.vertex.getEdges(level).stream().parallel().forEach(edge -> {
+
+            for (VertexDistance edge : current.vertex.getEdges(level)) {
                 if (visited.contains(edge.vertex)) {
-                    return;
+                    continue;
                 }
 
                 final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
@@ -395,7 +396,7 @@ class HNSWIndex {
                 if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
                     candidates.add(currentEdge);
                 }
-            });
+            }
         }
         return best;
     }
