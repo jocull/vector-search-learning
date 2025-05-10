@@ -453,8 +453,7 @@ class HNSWIndex {
         }
     }
 
-    public void addVertex(double[] newVector, Map<String, Object> metadata) {
-        final Vertex newVertex = new Vertex(newVector, metadata);
+    public void addVertex(final Vertex newVertex) {
         int level = 0;
         while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
             level++;
@@ -635,16 +634,16 @@ public class HNSWExample {
         final int vectorWidth = 1_000;
         final int vectorRange = 100_000;
         LOGGER.info("Vectors generating... vector width = {} x range = {}", vectorWidth, vectorRange);
-        final List<double[]> data = IntStream.range(0, vectorRange)
-                .mapToObj(i -> randomVector(vectorWidth))
+        final List<Vertex> data = IntStream.range(0, vectorRange)
+                .mapToObj(i -> new Vertex(randomVector(vectorWidth), Map.of("id", i)))
                 .toList();
         LOGGER.info("...done.");
 
         System.out.println();
         LOGGER.info("Layers generating...");
         for (int i = 0; i < data.size(); i++) {
-            final double[] vector = data.get(i);
-            index.addVertex(vector, Map.of("id", i));
+            final Vertex newVertex = data.get(i);
+            index.addVertex(newVertex);
             if (i > 0 && i % 1000 == 0) {
                 LOGGER.info("{}...", i);
             }
@@ -663,7 +662,7 @@ public class HNSWExample {
         for (int i = 0; i < queryVector.length; i++) {
             queryVector[i] = 5.0 + i; // 5.0, 6.0, 7.0, ...
         }
-        if (queryVector.length != data.get(0).length) {
+        if (queryVector.length != data.get(0).getVector().length) {
             throw new IllegalStateException("Query vector didn't match data vector length! They cannot be compared!");
         }
         final Vertex queryVertex = new Vertex(queryVector);
