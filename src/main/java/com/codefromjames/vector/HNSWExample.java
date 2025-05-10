@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveTask;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -178,32 +180,18 @@ class Vertex {
     }
 }
 
-class VertexDistancePriorityQueue implements AutoCloseable {
+class VertexDistancePriorityQueue {
     private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
 
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition newItem = lock.newCondition();
-    private final PriorityQueue<VertexDistance> delegate = new PriorityQueue<>(COMPARATOR);
-    private volatile boolean closed = false;
-
-    public boolean isClosed() {
-        return closed;
-    }
-
-    public void close() {
-        try {
-            lock.lock();
-            closed = true;
-            newItem.signalAll();
-        } finally {
-            lock.unlock();
-        }
-    }
+    private final Set<VertexDistance> existing = new HashSet<>();
+    private final PriorityQueue<VertexDistance> queue = new PriorityQueue<>(COMPARATOR);
 
     public int size() {
         try {
             lock.lock();
-            return delegate.size();
+            return queue.size();
         } finally {
             lock.unlock();
         }
@@ -212,17 +200,21 @@ class VertexDistancePriorityQueue implements AutoCloseable {
     public boolean isEmpty() {
         try {
             lock.lock();
-            return delegate.isEmpty();
+            return queue.isEmpty();
         } finally {
             lock.unlock();
         }
     }
 
-    public void add(VertexDistance vertexDistance) {
+    public boolean add(VertexDistance vertexDistance) {
         try {
             lock.lock();
-            delegate.add(vertexDistance);
-            newItem.signal();
+            if (existing.add(vertexDistance)) {
+                queue.add(vertexDistance);
+                newItem.signal();
+                return true;
+            }
+            return false;
         } finally {
             lock.unlock();
         }
@@ -232,8 +224,10 @@ class VertexDistancePriorityQueue implements AutoCloseable {
         try {
             lock.lock();
             for (VertexDistance vd : vertexDistances) {
-                delegate.add(vd);
-                newItem.signal();
+                if (existing.add(vd)) {
+                    queue.add(vd);
+                    newItem.signal();
+                }
             }
         } finally {
             lock.unlock();
@@ -243,10 +237,27 @@ class VertexDistancePriorityQueue implements AutoCloseable {
     public VertexDistance pollFirst() {
         try {
             lock.lock();
-            while (delegate.isEmpty() && !closed) {
+            final VertexDistance polled = queue.poll();
+            if (polled != null) {
+                existing.remove(polled);
+            }
+            return polled;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public VertexDistance awaitFirst() {
+        try {
+            lock.lock();
+            while (queue.isEmpty()) {
                 newItem.await();
             }
-            return delegate.poll();
+            final VertexDistance polled = queue.poll();
+            if (polled != null) {
+                existing.remove(polled);
+            }
+            return polled;
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         } finally {
@@ -385,6 +396,63 @@ class HNSWIndex {
         return layers.size() - 1;
     }
 
+    static class GraphTraversalTask extends RecursiveTask<VertexDistanceHeap> {
+        private final Vertex newVertex;
+        private final int level;
+        private final VertexDistancePriorityQueue candidates;
+        private final Set<Vertex> visited;
+
+        public GraphTraversalTask(Vertex newVertex, int level, VertexDistancePriorityQueue candidates, Set<Vertex> visited) {
+            this.newVertex = newVertex;
+            this.level = level;
+            this.candidates = candidates;
+            this.visited = visited;
+        }
+
+        @Override
+        protected VertexDistanceHeap compute() {
+            final VertexDistanceHeap best = VertexDistanceHeap.create();
+            while (!candidates.isEmpty()) {
+                final VertexDistance current = candidates.pollFirst();
+                if (current == null
+                        || visited.contains(current.vertex)) {
+                    continue;
+                }
+
+                visited.add(current.vertex);
+                best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+
+
+                final VertexDistanceHeap edges = current.vertex.getEdges(level);
+                final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size());
+                for (VertexDistance edge : edges) {
+                    if (visited.contains(edge.vertex)) {
+                        continue;
+                    }
+
+                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                    visited.add(currentEdge.vertex);
+                    if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                        if (candidates.add(currentEdge)) {
+                            GraphTraversalTask task = new GraphTraversalTask(newVertex, level, candidates, visited);
+                            task.fork(); // Begin now to process the candidate that was just added
+                            tasks.add(task);
+                        }
+                    }
+                }
+                // Join in the best from each branch to aggregate into this one
+                // TODO: This is probably waaaaay too greedy and branches out to everything...
+                for (GraphTraversalTask task : tasks) {
+                    VertexDistanceHeap bestNeighbors = task.join();
+                    for (VertexDistance bestNeighbor : bestNeighbors) {
+                        best.addIfCloserAndTrim(bestNeighbor, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+                    }
+                }
+            }
+            return best;
+        }
+    }
+
     public void addVertex(double[] newVector, Map<String, Object> metadata) {
         final Vertex newVertex = new Vertex(newVector, metadata);
         int level = 0;
@@ -444,7 +512,6 @@ class HNSWIndex {
 
         final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
         final VertexDistancePriorityQueue candidates = new VertexDistancePriorityQueue();
-        final VertexDistanceHeap best = VertexDistanceHeap.create();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
             candidates.addAll(startingNodes);
@@ -454,29 +521,8 @@ class HNSWIndex {
             candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
 
-        while (!candidates.isEmpty()) {
-            final VertexDistance current = candidates.pollFirst();
-            if (visited.contains(current.vertex)) {
-                continue;
-            }
-
-            visited.add(current.vertex);
-            best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
-
-
-            for (VertexDistance edge : current.vertex.getEdges(level)) {
-                if (visited.contains(edge.vertex)) {
-                    continue;
-                }
-
-                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                visited.add(currentEdge.vertex);
-                if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                    candidates.add(currentEdge);
-                }
-            }
-        }
-        return best;
+        // Entry point
+        return ForkJoinPool.commonPool().invoke(new GraphTraversalTask(newVertex, level, candidates, visited));
     }
 
     public List<List<Vertex>> getAllLayers() {
