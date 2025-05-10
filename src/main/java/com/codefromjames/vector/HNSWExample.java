@@ -452,7 +452,7 @@ public class HNSWExample {
         LOGGER.info("HNSW settings: {}", index);
 
         final int vectorWidth = 1_000;
-        final int vectorRange = 10_000;
+        final int vectorRange = 100_000;
         LOGGER.info("Vectors generating... vector width = {} x range = {}", vectorWidth, vectorRange);
         final List<double[]> data = IntStream.range(0, vectorRange)
                 .mapToObj(i -> randomVector(vectorWidth))
