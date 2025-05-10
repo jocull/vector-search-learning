@@ -4,10 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -458,52 +454,28 @@ class HNSWIndex {
             candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
 
-        final AtomicInteger candidateBalance = new AtomicInteger(candidates.size());
-        final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-        IntStream.range(0, Runtime.getRuntime().availableProcessors())
-                .<Runnable>mapToObj(i -> () -> {
-                    while (true) {
-                        final VertexDistance current = candidates.pollFirst();
-                        if (candidates.isClosed()) {
-                            return;
-                        }
+        while (!candidates.isEmpty()) {
+            final VertexDistance current = candidates.pollFirst();
+            if (visited.contains(current.vertex)) {
+                continue;
+            }
 
-                        final int candidatesLeft = candidateBalance.decrementAndGet();
-                        if (!visited.add(current.vertex)) {
-                            if (candidatesLeft == 0) {
-                                return;
-                            }
-                            continue;
-                        }
+            visited.add(current.vertex);
+            best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
 
-                        best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
-                        for (VertexDistance edge : current.vertex.getEdges(level)) {
-                            if (visited.contains(edge.vertex)) {
-                                continue;
-                            }
 
-                            final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                            visited.add(currentEdge.vertex);
-                            if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                                candidates.add(currentEdge);
-                            }
-                        }
+            for (VertexDistance edge : current.vertex.getEdges(level)) {
+                if (visited.contains(edge.vertex)) {
+                    continue;
+                }
 
-                        if (candidateBalance.get() == 0) {
-                            return;
-                        }
-                    }
-                })
-                .map(executorService::submit)
-                .toList()
-                .forEach(f -> {
-                    try {
-                        f.get();
-                    } catch (InterruptedException | ExecutionException e) {
-                        throw new RuntimeException(e);
-                    }
-                });
-        executorService.shutdown();
+                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                visited.add(currentEdge.vertex);
+                if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                    candidates.add(currentEdge);
+                }
+            }
+        }
         return best;
     }
 
