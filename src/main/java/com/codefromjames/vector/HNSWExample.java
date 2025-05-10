@@ -126,11 +126,11 @@ class Vertex {
         }
     }
 
-    public synchronized VertexDistanceHeap getEdges(int level) {
+    public VertexDistanceHeap getEdges(int level) {
         return edges.get(level);
     }
 
-    public synchronized boolean addEdge(int level, VertexDistance neighbor) {
+    public boolean addEdge(int level, VertexDistance neighbor) {
         while (edges.size() <= level) {
             edges.add(VertexDistanceHeap.create());
         }
@@ -170,7 +170,7 @@ class Vertex {
     }
 
     @Override
-    public synchronized String toString() {
+    public String toString() {
         return "Vertex{" +
                 "metadata=" + metadata +
                 ", maxLevel=" + maxLevel +
@@ -465,7 +465,7 @@ class HNSWIndex {
             layers.add(new ArrayList<>());
         }
 
-        final Set<Vertex> remapped = Collections.synchronizedSet(new HashSet<>());
+        final Set<Vertex> remapped = new HashSet<>();
         VertexDistanceHeap propagateBest = null;
         for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
             // If there are no nodes in this layer...
@@ -483,11 +483,10 @@ class HNSWIndex {
                 LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
             }
             // For nodes that are underneath us in the layer, associate newer or better peers
-            final int cl = currentLevel;
             for (VertexDistance vdNeighbor : best) {
                 // If the new vertex would exist in this level, create neighbors for it
-                if (newVertex.getMaxLevel() >= cl) {
-                    newVertex.addEdge(cl, vdNeighbor);
+                if (newVertex.getMaxLevel() >= currentLevel) {
+                    newVertex.addEdge(currentLevel, vdNeighbor);
                 }
                 // Check the edges for this neighbor at the target level to see if this is an improvement.
                 // Don't process nodes we've already touched again if they remain the best from a previous layer.
