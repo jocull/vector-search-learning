@@ -643,6 +643,39 @@ public class HNSWExample {
                 .toList();
         LOGGER.info("...done.");
 
+        final double[][] matrix = new double[vectorRange][vectorWidth + 1];
+        for (int i = 0; i < data.size(); i++) {
+            double normSum = 0.0;
+            final double[] v = data.get(i).getVector();
+            for (int j = 0; j < v.length; j++) {
+                matrix[i][j] = v[j];
+                normSum += v[j] * v[j];
+            }
+            matrix[i][vectorWidth] = Math.sqrt(normSum);
+        }
+
+        for (int i = 0; i < matrix.length; i++) {
+            final double[] self = matrix[i];
+            final double selfNorm = matrix[i][vectorWidth];
+
+            for (int j = 0; j < matrix.length; j++) {
+                if (i == j) {
+                    continue; // don't compare self
+                }
+                final double[] other = matrix[j];
+                final double otherNorm = matrix[j][vectorWidth];
+
+                double dotProduct = 0.0;
+                for (int vi = 0; vi < vectorWidth; vi++) {
+                    dotProduct += self[vi] * other[vi];
+                }
+                final double cosineDistance = 1 - (dotProduct / (selfNorm * otherNorm));
+                if (j % 10_000 == 0 && j != 0) {
+                    LOGGER.info("Fast mapping {}, {}...", i, j);
+                }
+            }
+        }
+
         final AtomicInteger selfIncr = new AtomicInteger(0);
         final AtomicReference<Instant> lastTime = new AtomicReference<>(Instant.now());
         final Map<Vertex, VertexDistanceHeap> distances = new ConcurrentHashMap<>(data.size());
