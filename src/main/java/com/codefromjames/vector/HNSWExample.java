@@ -28,24 +28,45 @@ class CosineDistanceUtils {
 
     static double norm(double[] vector) {
         DoubleVector sumVec = DoubleVector.zero(SPECIES);
-        for (int i = 0; i <= vector.length; i += SPECIES.length()) {
-            final VectorMask<Double> mask = SPECIES.indexInRange(i, vector.length);
-            final DoubleVector vec = DoubleVector.fromArray(SPECIES, vector, i, mask);
+        int i;
+
+        // Process full vectors
+        for (i = 0; i <= vector.length - SPECIES.length(); i += SPECIES.length()) {
+            DoubleVector vec = DoubleVector.fromArray(SPECIES, vector, i);
             sumVec = sumVec.add(vec.mul(vec));
         }
-        final double sum = sumVec.reduceLanes(VectorOperators.ADD);
+
+        // Reduce the vector result into a scalar
+        double sum = sumVec.reduceLanes(VectorOperators.ADD);
+
+        // Process remaining elements
+        for (int j = i; j < vector.length; j++) {
+            sum += vector[j] * vector[j];
+        }
+
         return Math.sqrt(sum);
     }
 
-    public static double dotProduct(double[] a, double[] b) {
+    static double dotProduct(double[] a, double[] b) {
         DoubleVector sumVec = DoubleVector.zero(SPECIES);
-        for (int i = 0; i <= a.length; i += SPECIES.length()) {
-            final VectorMask<Double> mask = SPECIES.indexInRange(i, a.length);
-            final DoubleVector va = DoubleVector.fromArray(SPECIES, a, i, mask);
-            final DoubleVector vb = DoubleVector.fromArray(SPECIES, b, i, mask);
+        int i;
+
+        // Process full vectors
+        for (i = 0; i <= a.length - SPECIES.length(); i += SPECIES.length()) {
+            DoubleVector va = DoubleVector.fromArray(SPECIES, a, i);
+            DoubleVector vb = DoubleVector.fromArray(SPECIES, b, i);
             sumVec = sumVec.add(va.mul(vb));
         }
-        return sumVec.reduceLanes(VectorOperators.ADD);
+
+        // Reduce the vector result into a scalar
+        double sum = sumVec.reduceLanes(VectorOperators.ADD);
+
+        // Process remaining elements
+        for (int j = i; j < a.length; j++) {
+            sum += a[j] * b[j];
+        }
+
+        return sum;
     }
 
     static double cosineSimilarity(double[] v1, double[] v2) {
