@@ -3,9 +3,13 @@ package com.codefromjames.vector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RecursiveTask;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -638,6 +642,30 @@ public class HNSWExample {
                 .mapToObj(i -> new Vertex(randomVector(vectorWidth), Map.of("id", i)))
                 .toList();
         LOGGER.info("...done.");
+
+        final AtomicInteger selfIncr = new AtomicInteger(0);
+        final AtomicReference<Instant> lastTime = new AtomicReference<>(Instant.now());
+        final Map<Vertex, VertexDistanceHeap> distances = new ConcurrentHashMap<>(data.size());
+        data.parallelStream()
+                .forEach(self -> {
+                    final VertexDistanceHeap selfDistances = distances.computeIfAbsent(self, k -> VertexDistanceHeap.create());
+                    for (Vertex other : data) {
+                        if (self == other) {
+                            continue; // don't evaluate self
+                        }
+                        // TODO: IS THIS CORRECT?
+                        //       Should it actually be EF_CONSTRUCTION / EF_SEARCH?
+                        //       Or is this correct since it's the max number of edges each node should have and
+                        //       that's what we're brute-forcing?
+                        selfDistances.addIfCloserAndTrim(new VertexDistance(self, other), Vertex.ML);
+                    }
+                    final int itr = selfIncr.incrementAndGet();
+                    if (itr > 0 && itr % 100 == 0) {
+                        final Instant now = Instant.now();
+                        final Instant then = lastTime.getAndSet(now);
+                        LOGGER.info("Mapping {} / {}... ({}%, {}ms cycle)", itr, data.size(), String.format("%.2f", (itr / (double) data.size() * 100.0)), now.toEpochMilli() - then.toEpochMilli());
+                    }
+                });
 
         System.out.println();
         LOGGER.info("Layers generating...");
