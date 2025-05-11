@@ -7,7 +7,15 @@ import jdk.incubator.vector.VectorSpecies;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveTask;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -134,11 +142,11 @@ class Vertex {
         }
     }
 
-    public synchronized VertexDistanceHeap getEdges(int level) {
+    public VertexDistanceHeap getEdges(int level) {
         return edges.get(level);
     }
 
-    public synchronized boolean addEdge(int level, VertexDistance neighbor) {
+    public boolean addEdge(int level, VertexDistance neighbor) {
         while (edges.size() <= level) {
             edges.add(VertexDistanceHeap.create());
         }
@@ -178,13 +186,99 @@ class Vertex {
     }
 
     @Override
-    public synchronized String toString() {
+    public String toString() {
         return "Vertex{" +
                 "metadata=" + metadata +
                 ", maxLevel=" + maxLevel +
                 ", vector=" + Arrays.toString(vector) +
                 ", edges=[" + edges.stream().map(x -> Integer.toString(x.size())).collect(Collectors.joining(",")) + ']' +
                 '}';
+    }
+}
+
+class VertexDistancePriorityQueue {
+    private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
+
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition newItem = lock.newCondition();
+    private final Set<VertexDistance> existing = new HashSet<>();
+    private final PriorityQueue<VertexDistance> queue = new PriorityQueue<>(COMPARATOR);
+
+    public int size() {
+        try {
+            lock.lock();
+            return queue.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean isEmpty() {
+        try {
+            lock.lock();
+            return queue.isEmpty();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean add(VertexDistance vertexDistance) {
+        try {
+            lock.lock();
+            if (existing.add(vertexDistance)) {
+                queue.add(vertexDistance);
+                newItem.signal();
+                return true;
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public void addAll(Iterable<VertexDistance> vertexDistances) {
+        try {
+            lock.lock();
+            for (VertexDistance vd : vertexDistances) {
+                if (existing.add(vd)) {
+                    queue.add(vd);
+                    newItem.signal();
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public VertexDistance pollFirst() {
+        try {
+            lock.lock();
+            final VertexDistance polled = queue.poll();
+            if (polled != null) {
+                existing.remove(polled);
+            }
+            return polled;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public VertexDistance awaitFirst() {
+        try {
+            lock.lock();
+            while (queue.isEmpty()) {
+                newItem.await();
+            }
+            final VertexDistance polled = queue.poll();
+            if (polled != null) {
+                existing.remove(polled);
+            }
+            return polled;
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            lock.unlock();
+        }
     }
 }
 
@@ -208,149 +302,97 @@ interface VertexDistanceHeap extends Iterable<VertexDistance> {
     int size();
 }
 
-class VertexDistancePriorityQueueSet extends PriorityQueue<VertexDistance> implements VertexDistanceHeap {
-    private static final Comparator<VertexDistance> COMPARATOR_ASC = Comparator.comparingDouble(vd -> vd.distance);
-    private static final Comparator<VertexDistance> COMPARATOR_DESC = COMPARATOR_ASC.reversed();
-
-    private final PriorityQueue<VertexDistance> asc = new PriorityQueue<>(COMPARATOR_ASC);
-    private final PriorityQueue<VertexDistance> desc = new PriorityQueue<>(COMPARATOR_DESC);
-    private final Set<Vertex> contained = new HashSet<>();
-
-    public VertexDistancePriorityQueueSet() {
-        super(COMPARATOR_DESC);
-    }
-
-    public VertexDistancePriorityQueueSet(Collection<? extends VertexDistance> vertexDistances) {
-        this();
-        this.addAll(vertexDistances);
-    }
-
-    @Override
-    public Stream<VertexDistance> stream() {
-        return super.stream();
-    }
-
-    @Override
-    public VertexDistance pollFirst() {
-        // Which technically would mean give me the "best" value...
-        throw new UnsupportedOperationException(); // TODO: Well this kinda doesn't work well here...
-    }
-
-    @Override
-    public boolean addIfCloserAndTrim(VertexDistance current, int efSearch) {
-        return false;
-    }
-
-    @Override
-    public boolean add(VertexDistance vd) {
-        if (contained.add(vd.vertex)) {
-            super.add(vd);
-            return true;
-        }
-        return false;
-    }
-
-    @Override
-    public void addAll(Iterable<VertexDistance> vertexDistances) {
-        for (VertexDistance vd : vertexDistances) {
-            add(vd);
-        }
-    }
-}
-
-class VertexDistanceArrayList extends ArrayList<VertexDistance> implements VertexDistanceHeap {
+class VertexDistanceTreeSet implements VertexDistanceHeap {
     private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
 
-    public VertexDistanceArrayList() {
-        super(Vertex.ML + 1);
-    }
-
-    @Override
-    public Stream<VertexDistance> stream() {
-        return super.stream();
-    }
-
-    @Override
-    public VertexDistance pollFirst() {
-        if (isEmpty()) {
-            return null;
-        }
-        final VertexDistance first = get(0);
-        remove(0);
-        return first;
-    }
-
-    @Override
-    public boolean add(VertexDistance vd) {
-        if (contains(vd)) {
-            return false;
-        }
-        return super.add(vd);
-    }
-
-    @Override
-    public void addAll(Iterable<VertexDistance> vertexDistances) {
-        for (VertexDistance vd : vertexDistances) {
-            add(vd);
-        }
-    }
-
-    @Override
-    public boolean addIfCloserAndTrim(VertexDistance vd, int size) {
-        assert size > -1;
-        if (size() < size
-                || last().distance > vd.distance) {
-            if (add(vd)) {
-                sort(COMPARATOR);
-                if (size() > size) {
-                    removeRange(size - 1, size() - 1);
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private VertexDistance last() {
-        return get(size() - 1);
-    }
-}
-
-class VertexDistanceTreeSet extends TreeSet<VertexDistance> implements VertexDistanceHeap {
-    private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
+    private final ReentrantLock lock = new ReentrantLock();
+    private final TreeSet<VertexDistance> delegate = new TreeSet<>(COMPARATOR);
 
     public VertexDistanceTreeSet() {
-        super(COMPARATOR);
     }
 
     public VertexDistanceTreeSet(Collection<? extends VertexDistance> c) {
-        super(c);
-        addAll(c);
+        delegate.addAll(c);
     }
 
     @Override
     public Stream<VertexDistance> stream() {
-        return super.stream();
+        return delegate.stream();
+    }
+
+    @Override
+    public VertexDistance pollFirst() {
+        try {
+            lock.lock();
+            return delegate.pollFirst();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public boolean add(VertexDistance vd) {
+        try {
+            lock.lock();
+            return delegate.add(vd);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public boolean isEmpty() {
+        try {
+            lock.lock();
+            return delegate.isEmpty();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public int size() {
+        try {
+            lock.lock();
+            return delegate.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public Iterator<VertexDistance> iterator() {
+        return delegate.iterator();
     }
 
     @Override
     public void addAll(Iterable<VertexDistance> vertexDistances) {
-        for (VertexDistance vd : vertexDistances) {
-            add(vd);
+        try {
+            lock.lock();
+            for (VertexDistance vd : vertexDistances) {
+                delegate.add(vd);
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
+    @Override
     public boolean addIfCloserAndTrim(VertexDistance vd, int size) {
-        assert size > -1;
-        if (size() < size
-                || last().distance > vd.distance) {
-            add(vd);
-            while (size() > size) {
-                pollLast();
+        try {
+            lock.lock();
+            if (delegate.size() < size
+                    || delegate.last().distance > vd.distance) {
+                delegate.add(vd);
+                while (delegate.size() > size) {
+                    delegate.pollLast();
+                }
+                return true;
             }
-            return true;
+            return false;
+        } finally {
+            lock.unlock();
         }
-        return false;
     }
 }
 
@@ -370,8 +412,64 @@ class HNSWIndex {
         return layers.size() - 1;
     }
 
-    public void addVertex(double[] newVector, Map<String, Object> metadata) {
-        final Vertex newVertex = new Vertex(newVector, metadata);
+    static class GraphTraversalTask extends RecursiveTask<VertexDistanceHeap> {
+        private final Vertex newVertex;
+        private final int level;
+        private final VertexDistancePriorityQueue candidates;
+        private final Set<Vertex> visited;
+
+        public GraphTraversalTask(Vertex newVertex, int level, VertexDistancePriorityQueue candidates, Set<Vertex> visited) {
+            this.newVertex = newVertex;
+            this.level = level;
+            this.candidates = candidates;
+            this.visited = visited;
+        }
+
+        @Override
+        protected VertexDistanceHeap compute() {
+            final VertexDistanceHeap best = VertexDistanceHeap.create();
+            while (!candidates.isEmpty()) {
+                final VertexDistance current = candidates.pollFirst();
+                if (current == null
+                        || visited.contains(current.vertex)) {
+                    continue;
+                }
+
+                visited.add(current.vertex);
+                best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+
+
+                final VertexDistanceHeap edges = current.vertex.getEdges(level);
+                final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size());
+                for (VertexDistance edge : edges) {
+                    if (visited.contains(edge.vertex)) {
+                        continue;
+                    }
+
+                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                    visited.add(currentEdge.vertex);
+                    if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                        if (candidates.add(currentEdge)) {
+                            GraphTraversalTask task = new GraphTraversalTask(newVertex, level, candidates, visited);
+                            task.fork(); // Begin now to process the candidate that was just added
+                            tasks.add(task);
+                        }
+                    }
+                }
+                // Join in the best from each branch to aggregate into this one
+                // TODO: This is probably waaaaay too greedy and branches out to everything...
+                for (GraphTraversalTask task : tasks) {
+                    VertexDistanceHeap bestNeighbors = task.join();
+                    for (VertexDistance bestNeighbor : bestNeighbors) {
+                        best.addIfCloserAndTrim(bestNeighbor, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+                    }
+                }
+            }
+            return best;
+        }
+    }
+
+    public void addVertex(final Vertex newVertex) {
         int level = 0;
         while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
             level++;
@@ -382,7 +480,7 @@ class HNSWIndex {
             layers.add(new ArrayList<>());
         }
 
-        final Set<Vertex> remapped = Collections.synchronizedSet(new HashSet<>());
+        final Set<Vertex> remapped = new HashSet<>();
         VertexDistanceHeap propagateBest = null;
         for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
             // If there are no nodes in this layer...
@@ -400,18 +498,17 @@ class HNSWIndex {
                 LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
             }
             // For nodes that are underneath us in the layer, associate newer or better peers
-            final int cl = currentLevel;
-            best.stream().parallel().forEach(vdNeighbor -> {
+            for (VertexDistance vdNeighbor : best) {
                 // If the new vertex would exist in this level, create neighbors for it
-                if (newVertex.getMaxLevel() >= cl) {
-                    newVertex.addEdge(cl, vdNeighbor);
+                if (newVertex.getMaxLevel() >= currentLevel) {
+                    newVertex.addEdge(currentLevel, vdNeighbor);
                 }
                 // Check the edges for this neighbor at the target level to see if this is an improvement.
                 // Don't process nodes we've already touched again if they remain the best from a previous layer.
                 if (remapped.add(vdNeighbor.vertex)) {
                     vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
                 }
-            });
+            }
 
             // Insert the new node into the level it belongs to
             if (currentLevel == newVertex.getMaxLevel()) {
@@ -428,8 +525,7 @@ class HNSWIndex {
         }
 
         final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
-        final VertexDistanceHeap candidates = VertexDistanceHeap.create();
-        final VertexDistanceHeap best = VertexDistanceHeap.create();
+        final VertexDistancePriorityQueue candidates = new VertexDistancePriorityQueue();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
             candidates.addAll(startingNodes);
@@ -439,30 +535,8 @@ class HNSWIndex {
             candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
 
-        while (!candidates.isEmpty()) {
-            final VertexDistance current = candidates.pollFirst();
-            if (visited.contains(current.vertex)) {
-                continue;
-            }
-
-            visited.add(current.vertex);
-            best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
-
-            current.vertex.getEdges(level).stream().parallel().forEach(edge -> {
-                if (visited.contains(edge.vertex)) {
-                    return;
-                }
-
-                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                visited.add(currentEdge.vertex);
-                synchronized (best) {
-                    if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                        candidates.add(currentEdge);
-                    }
-                }
-            });
-        }
-        return best;
+        // Entry point
+        return ForkJoinPool.commonPool().invoke(new GraphTraversalTask(newVertex, level, candidates, visited));
     }
 
     public List<List<Vertex>> getAllLayers() {
@@ -576,16 +650,40 @@ public class HNSWExample {
         final int vectorWidth = 1_000;
         final int vectorRange = 100_000;
         LOGGER.info("Vectors generating... vector width = {} x range = {}", vectorWidth, vectorRange);
-        final List<double[]> data = IntStream.range(0, vectorRange)
-                .mapToObj(i -> randomVector(vectorWidth))
+        final List<Vertex> data = IntStream.range(0, vectorRange)
+                .mapToObj(i -> new Vertex(randomVector(vectorWidth), Map.of("id", i)))
                 .toList();
         LOGGER.info("...done.");
+
+        final AtomicInteger selfIncr = new AtomicInteger(0);
+        final AtomicReference<Instant> lastTime = new AtomicReference<>(Instant.now());
+        final Map<Vertex, VertexDistanceHeap> distances = new ConcurrentHashMap<>(data.size());
+        data.parallelStream()
+                .forEach(self -> {
+                    final VertexDistanceHeap selfDistances = distances.computeIfAbsent(self, k -> VertexDistanceHeap.create());
+                    for (Vertex other : data) {
+                        if (self == other) {
+                            continue; // don't evaluate self
+                        }
+                        // TODO: IS THIS CORRECT?
+                        //       Should it actually be EF_CONSTRUCTION / EF_SEARCH?
+                        //       Or is this correct since it's the max number of edges each node should have and
+                        //       that's what we're brute-forcing?
+                        selfDistances.addIfCloserAndTrim(new VertexDistance(self, other), Vertex.ML);
+                    }
+                    final int itr = selfIncr.incrementAndGet();
+                    if (itr > 0 && itr % 100 == 0) {
+                        final Instant now = Instant.now();
+                        final Instant then = lastTime.getAndSet(now);
+                        LOGGER.info("Mapping {} / {}... ({}%, {}ms cycle)", itr, data.size(), String.format("%.2f", (itr / (double) data.size() * 100.0)), now.toEpochMilli() - then.toEpochMilli());
+                    }
+                });
 
         System.out.println();
         LOGGER.info("Layers generating...");
         for (int i = 0; i < data.size(); i++) {
-            final double[] vector = data.get(i);
-            index.addVertex(vector, Map.of("id", i));
+            final Vertex newVertex = data.get(i);
+            index.addVertex(newVertex);
             if (i > 0 && i % 1000 == 0) {
                 LOGGER.info("{}...", i);
             }
@@ -604,7 +702,7 @@ public class HNSWExample {
         for (int i = 0; i < queryVector.length; i++) {
             queryVector[i] = 5.0 + i; // 5.0, 6.0, 7.0, ...
         }
-        if (queryVector.length != data.get(0).length) {
+        if (queryVector.length != data.get(0).getVector().length) {
             throw new IllegalStateException("Query vector didn't match data vector length! They cannot be compared!");
         }
         final Vertex queryVertex = new Vertex(queryVector);
