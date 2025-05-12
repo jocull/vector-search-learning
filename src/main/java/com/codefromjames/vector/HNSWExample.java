@@ -419,39 +419,34 @@ class HNSWIndex {
             while (!candidates.isEmpty()) {
                 final VertexDistance current = candidates.pollFirst();
                 if (current == null
-                        || visited.contains(current.vertex)) {
+                        || !visited.add(current.vertex)) {
                     continue;
                 }
 
-                visited.add(current.vertex);
-                best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
-
+                if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                    // This node isn't better, so why would its neighbors be?
+                    // TODO: IS THIS ASSUMPTION STUPID?
+                    continue;
+                }
 
                 final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size());
+                // final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size()); // TODO: EFFECTIVELY SINGLE THREADED AGAIN
                 for (VertexDistance edge : edges) {
                     if (visited.contains(edge.vertex)) {
                         continue;
                     }
 
                     final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                    visited.add(currentEdge.vertex);
-                    if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                        if (candidates.add(currentEdge)) {
-                            GraphTraversalTask task = new GraphTraversalTask(newVertex, level, candidates, visited);
-                            task.fork(); // Begin now to process the candidate that was just added
-                            tasks.add(task);
-                        }
-                    }
+                    candidates.add(currentEdge);
                 }
                 // Join in the best from each branch to aggregate into this one
                 // TODO: This is probably waaaaay too greedy and branches out to everything...
-                for (GraphTraversalTask task : tasks) {
-                    VertexDistanceHeap bestNeighbors = task.join();
-                    for (VertexDistance bestNeighbor : bestNeighbors) {
-                        best.addIfCloserAndTrim(bestNeighbor, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
-                    }
-                }
+//                for (GraphTraversalTask task : tasks) {
+//                    VertexDistanceHeap bestNeighbors = task.join();
+//                    for (VertexDistance bestNeighbor : bestNeighbors) {
+//                        best.addIfCloserAndTrim(bestNeighbor, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+//                    }
+//                }
             }
             return best;
         }
@@ -643,68 +638,68 @@ public class HNSWExample {
                 .toList();
         LOGGER.info("...done.");
 
-        final double[][] matrix = new double[vectorRange][vectorWidth + 1];
-        IntStream.range(0, data.size())
-                .parallel()
-                .forEach(i -> {
-                    double normSum = 0.0;
-                    final double[] v = data.get(i).getVector();
-                    for (int j = 0; j < v.length; j++) {
-                        matrix[i][j] = v[j];
-                        normSum += v[j] * v[j];
-                    }
-                    matrix[i][vectorWidth] = Math.sqrt(normSum);
-                });
+//        final double[][] matrix = new double[vectorRange][vectorWidth + 1];
+//        IntStream.range(0, data.size())
+//                .parallel()
+//                .forEach(i -> {
+//                    double normSum = 0.0;
+//                    final double[] v = data.get(i).getVector();
+//                    for (int j = 0; j < v.length; j++) {
+//                        matrix[i][j] = v[j];
+//                        normSum += v[j] * v[j];
+//                    }
+//                    matrix[i][vectorWidth] = Math.sqrt(normSum);
+//                });
+//
+//        final AtomicInteger matrixIncr = new AtomicInteger(0);
+//        IntStream.range(0, matrix.length)
+//                .parallel()
+//                .forEach(i -> {
+//                    final double[] self = matrix[i];
+//                    final double selfNorm = matrix[i][vectorWidth];
+//
+//                    for (int j = 0; j < matrix.length; j++) {
+//                        if (i == j) {
+//                            continue; // don't compare self
+//                        }
+//                        final double[] other = matrix[j];
+//                        final double otherNorm = matrix[j][vectorWidth];
+//
+//                        double dotProduct = 0.0;
+//                        for (int vi = 0; vi < vectorWidth; vi++) {
+//                            dotProduct += self[vi] * other[vi];
+//                        }
+//                        final double cosineDistance = 1 - (dotProduct / (selfNorm * otherNorm));
+//                    }
+//                    final int matrixInc = matrixIncr.getAndIncrement();
+//                    if (matrixInc % 100 == 0 && matrixInc > 0) {
+//                        LOGGER.info("Fast mapping {}...", matrixInc);
+//                    }
+//                });
 
-        final AtomicInteger matrixIncr = new AtomicInteger(0);
-        IntStream.range(0, matrix.length)
-                .parallel()
-                .forEach(i -> {
-                    final double[] self = matrix[i];
-                    final double selfNorm = matrix[i][vectorWidth];
-
-                    for (int j = 0; j < matrix.length; j++) {
-                        if (i == j) {
-                            continue; // don't compare self
-                        }
-                        final double[] other = matrix[j];
-                        final double otherNorm = matrix[j][vectorWidth];
-
-                        double dotProduct = 0.0;
-                        for (int vi = 0; vi < vectorWidth; vi++) {
-                            dotProduct += self[vi] * other[vi];
-                        }
-                        final double cosineDistance = 1 - (dotProduct / (selfNorm * otherNorm));
-                    }
-                    final int matrixInc = matrixIncr.getAndIncrement();
-                    if (matrixInc % 100 == 0 && matrixInc > 0) {
-                        LOGGER.info("Fast mapping {}...", matrixInc);
-                    }
-                });
-
-        final AtomicInteger selfIncr = new AtomicInteger(0);
-        final AtomicReference<Instant> lastTime = new AtomicReference<>(Instant.now());
-        final Map<Vertex, VertexDistanceHeap> distances = new ConcurrentHashMap<>(data.size());
-        data.parallelStream()
-                .forEach(self -> {
-                    final VertexDistanceHeap selfDistances = distances.computeIfAbsent(self, k -> VertexDistanceHeap.create());
-                    for (Vertex other : data) {
-                        if (self == other) {
-                            continue; // don't evaluate self
-                        }
-                        // TODO: IS THIS CORRECT?
-                        //       Should it actually be EF_CONSTRUCTION / EF_SEARCH?
-                        //       Or is this correct since it's the max number of edges each node should have and
-                        //       that's what we're brute-forcing?
-                        selfDistances.addIfCloserAndTrim(new VertexDistance(self, other), Vertex.ML);
-                    }
-                    final int itr = selfIncr.incrementAndGet();
-                    if (itr > 0 && itr % 100 == 0) {
-                        final Instant now = Instant.now();
-                        final Instant then = lastTime.getAndSet(now);
-                        LOGGER.info("Mapping {} / {}... ({}%, {}ms cycle)", itr, data.size(), String.format("%.2f", (itr / (double) data.size() * 100.0)), now.toEpochMilli() - then.toEpochMilli());
-                    }
-                });
+//        final AtomicInteger selfIncr = new AtomicInteger(0);
+//        final AtomicReference<Instant> lastTime = new AtomicReference<>(Instant.now());
+//        final Map<Vertex, VertexDistanceHeap> distances = new ConcurrentHashMap<>(data.size());
+//        data.parallelStream()
+//                .forEach(self -> {
+//                    final VertexDistanceHeap selfDistances = distances.computeIfAbsent(self, k -> VertexDistanceHeap.create());
+//                    for (Vertex other : data) {
+//                        if (self == other) {
+//                            continue; // don't evaluate self
+//                        }
+//                        // TODO: IS THIS CORRECT?
+//                        //       Should it actually be EF_CONSTRUCTION / EF_SEARCH?
+//                        //       Or is this correct since it's the max number of edges each node should have and
+//                        //       that's what we're brute-forcing?
+//                        selfDistances.addIfCloserAndTrim(new VertexDistance(self, other), Vertex.ML);
+//                    }
+//                    final int itr = selfIncr.incrementAndGet();
+//                    if (itr > 0 && itr % 100 == 0) {
+//                        final Instant now = Instant.now();
+//                        final Instant then = lastTime.getAndSet(now);
+//                        LOGGER.info("Mapping {} / {}... ({}%, {}ms cycle)", itr, data.size(), String.format("%.2f", (itr / (double) data.size() * 100.0)), now.toEpochMilli() - then.toEpochMilli());
+//                    }
+//                });
 
         System.out.println();
         LOGGER.info("Layers generating...");
