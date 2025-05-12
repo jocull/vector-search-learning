@@ -3,13 +3,8 @@ package com.codefromjames.vector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.RecursiveTask;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.*;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -400,22 +395,23 @@ class HNSWIndex {
         return layers.size() - 1;
     }
 
-    static class GraphTraversalTask extends RecursiveTask<VertexDistanceHeap> {
+    static class GraphTraversalTask extends RecursiveAction {
         private final Vertex newVertex;
         private final int level;
-        private final VertexDistancePriorityQueue candidates;
+        private final VertexDistanceHeap candidates;
         private final Set<Vertex> visited;
+        private final VertexDistanceHeap best;
 
-        public GraphTraversalTask(Vertex newVertex, int level, VertexDistancePriorityQueue candidates, Set<Vertex> visited) {
+        public GraphTraversalTask(Vertex newVertex, int level, VertexDistanceHeap candidates, Set<Vertex> visited, VertexDistanceHeap best) {
             this.newVertex = newVertex;
             this.level = level;
             this.candidates = candidates;
             this.visited = visited;
+            this.best = best;
         }
 
         @Override
-        protected VertexDistanceHeap compute() {
-            final VertexDistanceHeap best = VertexDistanceHeap.create();
+        protected void compute() {
             while (!candidates.isEmpty()) {
                 final VertexDistance current = candidates.pollFirst();
                 if (current == null
@@ -430,7 +426,7 @@ class HNSWIndex {
                 }
 
                 final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                // final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size()); // TODO: EFFECTIVELY SINGLE THREADED AGAIN
+                final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size());
                 for (VertexDistance edge : edges) {
                     if (visited.contains(edge.vertex)) {
                         continue;
@@ -438,17 +434,15 @@ class HNSWIndex {
 
                     final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
                     candidates.add(currentEdge);
+                    tasks.add(new GraphTraversalTask(newVertex, level, candidates, visited, best));
                 }
-                // Join in the best from each branch to aggregate into this one
-                // TODO: This is probably waaaaay too greedy and branches out to everything...
-//                for (GraphTraversalTask task : tasks) {
-//                    VertexDistanceHeap bestNeighbors = task.join();
-//                    for (VertexDistance bestNeighbor : bestNeighbors) {
-//                        best.addIfCloserAndTrim(bestNeighbor, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
-//                    }
-//                }
+                for (GraphTraversalTask task : tasks) {
+                    task.fork();
+                }
+                for (GraphTraversalTask task : tasks) {
+                    task.join();
+                }
             }
-            return best;
         }
     }
 
@@ -503,12 +497,13 @@ class HNSWIndex {
     }
 
     private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Iterable<VertexDistance> startingNodes, int level) {
+        final VertexDistanceHeap best = VertexDistanceHeap.create();
         if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
-            return VertexDistanceHeap.create();
+            return best;
         }
 
         final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
-        final VertexDistancePriorityQueue candidates = new VertexDistancePriorityQueue();
+        final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
             candidates.addAll(startingNodes);
@@ -519,7 +514,8 @@ class HNSWIndex {
         }
 
         // Entry point
-        return ForkJoinPool.commonPool().invoke(new GraphTraversalTask(newVertex, level, candidates, visited));
+        ForkJoinPool.commonPool().invoke(new GraphTraversalTask(newVertex, level, candidates, visited, best));
+        return best;
     }
 
     public List<List<Vertex>> getAllLayers() {
