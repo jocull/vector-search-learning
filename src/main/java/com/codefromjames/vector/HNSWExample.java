@@ -56,6 +56,48 @@ class CosineDistanceUtils {
     }
 }
 
+class ListPartitioner {
+    static <T> List<List<T>> partition(List<T> list, int size) {
+        if (size <= 0) {
+            throw new IllegalArgumentException("Size must be positive.");
+        }
+        final List<List<T>> result = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) {
+            final int end = Math.min(i + size, list.size());
+            final List<T> sublist = new ArrayList<>();
+            for (int j = i; j < end; j++) {
+                sublist.add(list.get(j));
+            }
+            result.add(sublist);
+        }
+        return result;
+    }
+
+    static <T> List<List<T>> partitionIntoGroups(List<T> list, int groupCount) {
+        if (groupCount <= 0) {
+            throw new IllegalArgumentException("Group count must be positive.");
+        }
+
+        final int size = list.size();
+        final int baseSize = size / groupCount;
+        final int remainder = size % groupCount;
+
+        List<List<T>> result = new ArrayList<>();
+        int index = 0;
+
+        for (int i = 0; i < groupCount; i++) {
+            final int currentSize = baseSize + (i < remainder ? 1 : 0);
+            final List<T> group = new ArrayList<>();
+            for (int j = 0; j < currentSize; j++) {
+                group.add(list.get(index));
+                index++;
+            }
+            result.add(group);
+        }
+        return result;
+    }
+}
+
 class VertexDistance {
     final Vertex vertex;
     final double distance;
@@ -413,35 +455,37 @@ class HNSWIndex {
         @Override
         protected void compute() {
             while (!candidates.isEmpty()) {
-                final VertexDistance current = candidates.pollFirst();
-                if (current == null
-                        || !visited.add(current.vertex)) {
-                    continue;
-                }
-
-                if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                    // This node isn't better, so why would its neighbors be?
-                    // TODO: IS THIS ASSUMPTION STUPID?
-                    continue;
-                }
-
-                final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size());
-                for (VertexDistance edge : edges) {
-                    if (visited.contains(edge.vertex)) {
-                        continue;
+                // Drain all the candidates for this pass
+                final List<VertexDistance> drained = new ArrayList<>();
+                while (!candidates.isEmpty()) {
+                    final VertexDistance current = candidates.pollFirst();
+                    if (visited.add(current.vertex)) {
+                        drained.add(current);
                     }
+                }
 
-                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                    candidates.add(currentEdge);
-                    tasks.add(new GraphTraversalTask(newVertex, level, candidates, visited, best));
-                }
-                for (GraphTraversalTask task : tasks) {
-                    task.fork();
-                }
-                for (GraphTraversalTask task : tasks) {
-                    task.join();
-                }
+                // Partition them so we can scan them in parallel efficiently
+                final List<List<VertexDistance>> candidatePartitions = ListPartitioner.partitionIntoGroups(drained, Runtime.getRuntime().availableProcessors());
+                candidatePartitions.parallelStream()
+                        .forEach(candidatePartition -> {
+                            for (VertexDistance current : candidatePartition) {
+                                if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                                    // This node isn't better, so why would its neighbors be?
+                                    // TODO: IS THIS ASSUMPTION STUPID?
+                                    return;
+                                }
+
+                                final VertexDistanceHeap edges = current.vertex.getEdges(level);
+                                for (VertexDistance edge : edges) {
+                                    if (visited.contains(edge.vertex)) {
+                                        continue;
+                                    }
+
+                                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                                    candidates.add(currentEdge);
+                                }
+                            }
+                        });
             }
         }
     }
