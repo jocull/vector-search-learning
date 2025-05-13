@@ -7,6 +7,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -314,6 +315,8 @@ interface VertexDistanceHeap extends Iterable<VertexDistance> {
 
     VertexDistance pollFirst();
 
+    List<VertexDistance> drain(Predicate<VertexDistance> filter);
+
     boolean addIfCloserAndTrim(VertexDistance current, int efSearch);
 
     boolean add(VertexDistance vd);
@@ -343,6 +346,23 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
     @Override
     public Stream<VertexDistance> stream() {
         return delegate.stream();
+    }
+
+    @Override
+    public List<VertexDistance> drain(Predicate<VertexDistance> filter) {
+        try {
+            lock.lock();
+            final List<VertexDistance> drained = new ArrayList<>(delegate.size());
+            for (VertexDistance vd : delegate) {
+                if (filter.test(vd)) {
+                    drained.add(vd);
+                }
+            }
+            delegate.clear();
+            return drained;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
@@ -437,59 +457,6 @@ class HNSWIndex {
         return layers.size() - 1;
     }
 
-    static class GraphTraversalTask extends RecursiveAction {
-        private final Vertex newVertex;
-        private final int level;
-        private final VertexDistanceHeap candidates;
-        private final Set<Vertex> visited;
-        private final VertexDistanceHeap best;
-
-        public GraphTraversalTask(Vertex newVertex, int level, VertexDistanceHeap candidates, Set<Vertex> visited, VertexDistanceHeap best) {
-            this.newVertex = newVertex;
-            this.level = level;
-            this.candidates = candidates;
-            this.visited = visited;
-            this.best = best;
-        }
-
-        @Override
-        protected void compute() {
-            while (!candidates.isEmpty()) {
-                // Drain all the candidates for this pass
-                final List<VertexDistance> drained = new ArrayList<>();
-                while (!candidates.isEmpty()) {
-                    final VertexDistance current = candidates.pollFirst();
-                    if (visited.add(current.vertex)) {
-                        drained.add(current);
-                    }
-                }
-
-                // Partition them so we can scan them in parallel efficiently
-                final List<List<VertexDistance>> candidatePartitions = ListPartitioner.partitionIntoGroups(drained, Runtime.getRuntime().availableProcessors());
-                candidatePartitions.parallelStream()
-                        .forEach(candidatePartition -> {
-                            for (VertexDistance current : candidatePartition) {
-                                if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                                    // This node isn't better, so why would its neighbors be?
-                                    // TODO: IS THIS ASSUMPTION STUPID?
-                                    return;
-                                }
-
-                                final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                                for (VertexDistance edge : edges) {
-                                    if (visited.contains(edge.vertex)) {
-                                        continue;
-                                    }
-
-                                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                                    candidates.add(currentEdge);
-                                }
-                            }
-                        });
-            }
-        }
-    }
-
     public void addVertex(final Vertex newVertex) {
         int level = 0;
         while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
@@ -546,7 +513,7 @@ class HNSWIndex {
             return best;
         }
 
-        final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
+        final Map<Vertex, Boolean> visited = new ConcurrentHashMap<>(EF_CONSTRUCTION);
         final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
@@ -557,8 +524,34 @@ class HNSWIndex {
             candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
 
-        // Entry point
-        ForkJoinPool.commonPool().invoke(new GraphTraversalTask(newVertex, level, candidates, visited, best));
+        while (!candidates.isEmpty()) {
+            // Drain all the candidates for this pass
+            final List<VertexDistance> drained = candidates.drain(vd -> !visited.containsKey(vd.vertex));
+
+            // Partition them so we can scan them in parallel efficiently
+            final List<List<VertexDistance>> candidatePartitions = ListPartitioner.partition(drained, 256);
+            candidatePartitions.parallelStream()
+                    .forEach(candidatePartition -> {
+                        for (VertexDistance current : candidatePartition) {
+                            visited.put(current.vertex, Boolean.TRUE);
+                            if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                                // If this vertex is not better, don't consider its edges either
+                                return;
+                            }
+
+                            final VertexDistanceHeap edges = current.vertex.getEdges(level);
+                            for (VertexDistance edge : edges) {
+                                if (visited.containsKey(edge.vertex)) {
+                                    continue;
+                                }
+
+                                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                                candidates.add(currentEdge);
+                            }
+                        }
+                    });
+        }
+
         return best;
     }
 
