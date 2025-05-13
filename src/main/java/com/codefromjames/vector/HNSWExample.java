@@ -457,6 +457,88 @@ class HNSWIndex {
         return layers.size() - 1;
     }
 
+    public void addVertices(Collection<Vertex> newVertices) {
+        int maxLevel = 0;
+        for (Vertex newVertex : newVertices) {
+            int level = 0;
+            while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
+                level++;
+            }
+            maxLevel = Math.max(maxLevel, level);
+
+            newVertex.setMaxLevel(level);
+            while (layers.size() <= level) {
+                layers.add(new ArrayList<>());
+            }
+        }
+
+        newVertices.parallelStream()
+                .forEach(self -> {
+                    // Brute force match this vertex with its closest peers in the batch.
+                    // We do this because they won't be visible in the broader graph yet, so we
+                    // precalculate them as edges to capture any potential close matches.
+                    for (Vertex other : newVertices) {
+                        if (self == other) {
+                            continue; // Don't match self
+                        }
+                        final double distance = CosineDistanceUtils.cosineDistance(self, other);
+                        final VertexDistance vd = new VertexDistance(self, other);
+
+                        // Find the common denominator level between the two
+                        final int commonLevel = Math.min(self.getMaxLevel(), other.getMaxLevel());
+
+                        for (int level = commonLevel; level >= 0; level--) {
+                            self.addEdge(level, new VertexDistance(other, distance));
+                        }
+                    }
+                });
+
+        newVertices.parallelStream()
+                .forEach(newVertex -> {
+                    final Set<Vertex> remapped = new HashSet<>();
+                    VertexDistanceHeap propagateBest = null;
+                    for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+                        // If there are no nodes in this layer...
+                        if (layers.get(currentLevel).isEmpty()) {
+                            // ...there's nothing else to do
+                            continue;
+                        }
+
+                        final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
+                        if (LOGGER.isTraceEnabled()) {
+                            LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
+                        }
+                        // For nodes that are underneath us in the layer, associate newer or better peers
+                        for (VertexDistance vdNeighbor : best) {
+                            // If the new vertex would exist in this level, create neighbors for it
+                            if (newVertex.getMaxLevel() >= currentLevel) {
+                                // TODO: CONCURRENT MODIFICATION PROBLEM
+                                newVertex.addEdge(currentLevel, vdNeighbor);
+                            }
+                            // Check the edges for this neighbor at the target level to see if this is an improvement.
+                            // Don't process nodes we've already touched again if they remain the best from a previous layer.
+                            if (remapped.add(vdNeighbor.vertex)) {
+                                // TODO: CONCURRENT MODIFICATION PROBLEM
+                                vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
+                            }
+                        }
+
+                        // Insert the new node into the level it belongs to
+                        if (currentLevel == newVertex.getMaxLevel()) {
+                            layers.get(currentLevel).add(newVertex);
+                        }
+
+                        propagateBest = best;
+                    }
+                });
+
+        // Last, add them into the graph when connections are fully built
+        newVertices.forEach(newVertex -> {
+            layers.get(newVertex.getMaxLevel()).add(newVertex);
+        });
+    }
+
+    @Deprecated
     public void addVertex(final Vertex newVertex) {
         int level = 0;
         while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
@@ -527,7 +609,7 @@ class HNSWIndex {
         while (!candidates.isEmpty()) {
             // Drain all the candidates for this pass
             final List<VertexDistance> drained = candidates.drain(vd -> visited.put(vd.vertex, Boolean.TRUE) == null);
-            drained.parallelStream()
+            drained.parallelStream() // TODO: REMOVE THIS CONCURRENCY?
                     .forEach(current -> {
                         if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
                             // If this vertex is not better, don't consider its edges either
@@ -535,7 +617,7 @@ class HNSWIndex {
                         }
 
                         final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                        for (VertexDistance edge : edges) {
+                        for (VertexDistance edge : edges) { // TODO: CONCURRENT MODIFICATION PROBLEM
                             if (visited.containsKey(edge.vertex)) {
                                 continue;
                             }
@@ -728,12 +810,25 @@ public class HNSWExample {
 //                    }
 //                });
 
+//        System.out.println();
+//        LOGGER.info("Layers generating...");
+//        for (int i = 0; i < data.size(); i++) {
+//            final Vertex newVertex = data.get(i);
+//            index.addVertex(newVertex);
+//            if (i > 0 && i % 1000 == 0) {
+//                LOGGER.info("{}...", i);
+//            }
+//        }
+//        LOGGER.info("...done.");
+
         System.out.println();
         LOGGER.info("Layers generating...");
-        for (int i = 0; i < data.size(); i++) {
-            final Vertex newVertex = data.get(i);
-            index.addVertex(newVertex);
-            if (i > 0 && i % 1000 == 0) {
+        {
+            final List<List<Vertex>> partitions = ListPartitioner.partition(data, 256);
+            int i = 0;
+            for (List<Vertex> partition : partitions) {
+                i += partition.size();
+                index.addVertices(partition);
                 LOGGER.info("{}...", i);
             }
         }
