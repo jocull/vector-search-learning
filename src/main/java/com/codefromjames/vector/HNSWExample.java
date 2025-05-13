@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
@@ -313,6 +312,8 @@ interface VertexDistanceHeap extends Iterable<VertexDistance> {
         return new VertexDistanceTreeSet();
     }
 
+    VertexDistanceHeap copy();
+
     VertexDistance pollFirst();
 
     List<VertexDistance> drain(Predicate<VertexDistance> filter);
@@ -346,6 +347,17 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
     @Override
     public Stream<VertexDistance> stream() {
         return delegate.stream();
+    }
+
+    @Override
+    public VertexDistanceHeap copy() {
+        try {
+            lock.lock();
+            final VertexDistanceTreeSet copy = new VertexDistanceTreeSet(delegate);
+            return copy;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
@@ -493,44 +505,51 @@ class HNSWIndex {
                     }
                 });
 
-        newVertices.parallelStream()
-                .forEach(newVertex -> {
-                    final Set<Vertex> remapped = new HashSet<>();
-                    VertexDistanceHeap propagateBest = null;
-                    for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
-                        // If there are no nodes in this layer...
-                        if (layers.get(currentLevel).isEmpty()) {
-                            // ...there's nothing else to do
-                            continue;
-                        }
-
-                        final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
-                        if (LOGGER.isTraceEnabled()) {
-                            LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
-                        }
-                        // For nodes that are underneath us in the layer, associate newer or better peers
-                        for (VertexDistance vdNeighbor : best) {
-                            // If the new vertex would exist in this level, create neighbors for it
-                            if (newVertex.getMaxLevel() >= currentLevel) {
-                                // TODO: CONCURRENT MODIFICATION PROBLEM
-                                newVertex.addEdge(currentLevel, vdNeighbor);
+        final Map<Vertex, List<VertexDistanceHeap>> bestVertexInsertions = newVertices.parallelStream()
+                .collect(Collectors.toMap(
+                        k -> k,
+                        newVertex -> {
+                            final List<VertexDistanceHeap> layerBest = new ArrayList<>(getCurrentMaxLevel());
+                            while (layerBest.size() < getCurrentMaxLevel()) {
+                                layerBest.add(null);
                             }
-                            // Check the edges for this neighbor at the target level to see if this is an improvement.
-                            // Don't process nodes we've already touched again if they remain the best from a previous layer.
-                            if (remapped.add(vdNeighbor.vertex)) {
-                                // TODO: CONCURRENT MODIFICATION PROBLEM
-                                vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
+
+                            VertexDistanceHeap propagateBest = null;
+                            for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+                                // If there are no nodes in this layer...
+                                if (layers.get(currentLevel).isEmpty()) {
+                                    // ...there's nothing else to do
+                                    continue;
+                                }
+
+                                final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
+                                if (LOGGER.isTraceEnabled()) {
+                                    LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
+                                }
+                                propagateBest = best;
+                                layerBest.set(currentLevel, best);
                             }
-                        }
+                            return layerBest;
+                        }));
 
-                        // Insert the new node into the level it belongs to
-                        if (currentLevel == newVertex.getMaxLevel()) {
-                            layers.get(currentLevel).add(newVertex);
-                        }
-
-                        propagateBest = best;
+        bestVertexInsertions.forEach((newVertex, bestByLayer) -> {
+            final Set<Vertex> remapped = new HashSet<>();
+            for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+                // For nodes that are underneath us in the layer, associate newer or better peers
+                final VertexDistanceHeap best = bestByLayer.get(currentLevel);
+                for (VertexDistance vdNeighbor : best) {
+                    // If the new vertex would exist in this level, create neighbors for it
+                    if (newVertex.getMaxLevel() >= currentLevel) {
+                        newVertex.addEdge(currentLevel, vdNeighbor);
                     }
-                });
+                    // Check the edges for this neighbor at the target level to see if this is an improvement.
+                    // Don't process nodes we've already touched again if they remain the best from a previous layer.
+                    if (remapped.add(vdNeighbor.vertex)) {
+                        vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
+                    }
+                }
+            }
+        });
 
         // Last, add them into the graph when connections are fully built
         newVertices.forEach(newVertex -> {
@@ -595,7 +614,7 @@ class HNSWIndex {
             return best;
         }
 
-        final Map<Vertex, Boolean> visited = new ConcurrentHashMap<>(EF_CONSTRUCTION);
+        final Set<Vertex> visited = new HashSet<>(EF_CONSTRUCTION);
         final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
@@ -607,25 +626,24 @@ class HNSWIndex {
         }
 
         while (!candidates.isEmpty()) {
-            // Drain all the candidates for this pass
-            final List<VertexDistance> drained = candidates.drain(vd -> visited.put(vd.vertex, Boolean.TRUE) == null);
-            drained.parallelStream() // TODO: REMOVE THIS CONCURRENCY?
-                    .forEach(current -> {
-                        if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                            // If this vertex is not better, don't consider its edges either
-                            return;
-                        }
+            final VertexDistance current = candidates.pollFirst();
+            if (!visited.add(current.vertex)) {
+                continue;
+            }
+            if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                // If this vertex is not better, don't consider its edges either
+                continue;
+            }
 
-                        final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                        for (VertexDistance edge : edges) { // TODO: CONCURRENT MODIFICATION PROBLEM
-                            if (visited.containsKey(edge.vertex)) {
-                                continue;
-                            }
+            final VertexDistanceHeap edges = current.vertex.getEdges(level);
+            for (VertexDistance edge : edges) { // TODO: CONCURRENT MODIFICATION PROBLEM
+                if (visited.contains(edge.vertex)) {
+                    continue;
+                }
 
-                            final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                            candidates.add(currentEdge);
-                        }
-                    });
+                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                candidates.add(currentEdge);
+            }
         }
 
         return best;
