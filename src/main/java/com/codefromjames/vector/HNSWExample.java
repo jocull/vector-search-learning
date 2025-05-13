@@ -526,28 +526,22 @@ class HNSWIndex {
 
         while (!candidates.isEmpty()) {
             // Drain all the candidates for this pass
-            final List<VertexDistance> drained = candidates.drain(vd -> !visited.containsKey(vd.vertex));
+            final List<VertexDistance> drained = candidates.drain(vd -> visited.put(vd.vertex, Boolean.TRUE) == null);
+            drained.parallelStream()
+                    .forEach(current -> {
+                        if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                            // If this vertex is not better, don't consider its edges either
+                            return;
+                        }
 
-            // Partition them so we can scan them in parallel efficiently
-            final List<List<VertexDistance>> candidatePartitions = ListPartitioner.partition(drained, 256);
-            candidatePartitions.parallelStream()
-                    .forEach(candidatePartition -> {
-                        for (VertexDistance current : candidatePartition) {
-                            visited.put(current.vertex, Boolean.TRUE);
-                            if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                                // If this vertex is not better, don't consider its edges either
-                                return;
+                        final VertexDistanceHeap edges = current.vertex.getEdges(level);
+                        for (VertexDistance edge : edges) {
+                            if (visited.containsKey(edge.vertex)) {
+                                continue;
                             }
 
-                            final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                            for (VertexDistance edge : edges) {
-                                if (visited.containsKey(edge.vertex)) {
-                                    continue;
-                                }
-
-                                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                                candidates.add(currentEdge);
-                            }
+                            final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                            candidates.add(currentEdge);
                         }
                     });
         }
