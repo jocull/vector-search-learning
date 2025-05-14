@@ -388,37 +388,9 @@ class HNSWIndex {
         }
 
         // Step 2:
-        // For each incoming vertex, compare it to all others in the batch.
-        // We need to do this to ensure that nodes batched together don't miss relationships between themselves.
-        // If the incoming relationships are better than what's in the graph they will remain after the next step.
-        // If they are not, they will be replaced.
-        newVertices.parallelStream()
-                .forEach(self -> {
-                    // Brute force match this vertex with its closest peers in the batch.
-                    // We do this because they won't be visible in the broader graph yet, so we
-                    // precalculate them as edges to capture any potential close matches.
-                    for (Vertex other : newVertices) {
-                        if (self == other) {
-                            continue; // Don't match self
-                        }
-
-                        // Find the common denominator level between the two and map down the levels from the top
-                        final int commonLevel = Math.min(self.getMaxLevel(), other.getMaxLevel());
-                        final double distance = CosineDistanceUtils.cosineDistance(self, other);
-                        for (int level = commonLevel; level >= 0; level--) {
-                            // TODO:
-                            //  because self -> other and other -> self are the same relationship
-                            //  we could probably optimize this somehow... maybe with caching?
-                            //  not sure... and not sure if the overhead makes it worse anyways
-                            self.addEdge(level, new VertexDistance(other, distance));
-                        }
-                    }
-                });
-
-        // Step 3:
         // For each incoming vertex, compare it to all others in the *existing* graph.
-        // We'll find the best relationships here, and eventually knock out any worse relationships
-        // from the first pass above.
+        // We'll find the best relationships here first, to ensure we're really checking the graph
+        // rather than giving up on a full buffer of existing connections.
         final Map<Vertex, Map<Integer, VertexDistanceHeap>> bestVertexInsertions = newVertices.parallelStream()
                 .collect(Collectors.toMap(
                         k -> k,
@@ -441,6 +413,34 @@ class HNSWIndex {
                             }
                             return layerBest;
                         }));
+
+        // Step 3:
+        // For each incoming vertex, compare it to all others in the batch.
+        // We need to do this to ensure that nodes batched together don't miss relationships between themselves.
+        // If the incoming relationships are better than what's in the graph then we'll take them instead.
+        // If they are not, they will be ignored.
+        newVertices.parallelStream()
+                .forEach(self -> {
+                    // Brute force match this vertex with its closest peers in the batch.
+                    // We do this because they won't be visible in the broader graph yet, so we
+                    // precalculate them as edges to capture any potential close matches.
+                    for (Vertex other : newVertices) {
+                        if (self == other) {
+                            continue; // Don't match self
+                        }
+
+                        // Find the common denominator level between the two and map down the levels from the top
+                        final int commonLevel = Math.min(self.getMaxLevel(), other.getMaxLevel());
+                        final double distance = CosineDistanceUtils.cosineDistance(self, other);
+                        for (int level = commonLevel; level >= 0; level--) {
+                            // TODO:
+                            //  because self -> other and other -> self are the same relationship
+                            //  we could probably optimize this somehow... maybe with caching?
+                            //  not sure... and not sure if the overhead makes it worse anyways
+                            self.addEdge(level, new VertexDistance(other, distance));
+                        }
+                    }
+                });
 
         // Step 4:
         // Iterate over the best vertex matches at the layers we calculated above.
