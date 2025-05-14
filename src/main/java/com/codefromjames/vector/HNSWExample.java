@@ -4,12 +4,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Predicate;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 class CosineDistanceUtils {
     private CosineDistanceUtils() {
@@ -172,7 +171,7 @@ class Vertex {
     }
 
     public boolean addEdge(int level, VertexDistance neighbor) {
-        while (edges.size() <= level) {
+        while (edges.size() <= level) { // TODO: Can this just be done up front instead?
             edges.add(VertexDistanceHeap.create());
         }
         if (this == neighbor.vertex) {
@@ -215,108 +214,18 @@ class Vertex {
         return "Vertex{" +
                 "metadata=" + metadata +
                 ", maxLevel=" + maxLevel +
-                ", vector=" + Arrays.toString(vector) +
+                ", vector=[" + vector.length + "]" +
                 ", edges=[" + edges.stream().map(x -> Integer.toString(x.size())).collect(Collectors.joining(",")) + ']' +
                 '}';
     }
 }
 
-class VertexDistancePriorityQueue {
-    private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
-
-    private final ReentrantLock lock = new ReentrantLock();
-    private final Condition newItem = lock.newCondition();
-    private final Set<VertexDistance> existing = new HashSet<>();
-    private final PriorityQueue<VertexDistance> queue = new PriorityQueue<>(COMPARATOR);
-
-    public int size() {
-        try {
-            lock.lock();
-            return queue.size();
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public boolean isEmpty() {
-        try {
-            lock.lock();
-            return queue.isEmpty();
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public boolean add(VertexDistance vertexDistance) {
-        try {
-            lock.lock();
-            if (existing.add(vertexDistance)) {
-                queue.add(vertexDistance);
-                newItem.signal();
-                return true;
-            }
-            return false;
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public void addAll(Iterable<VertexDistance> vertexDistances) {
-        try {
-            lock.lock();
-            for (VertexDistance vd : vertexDistances) {
-                if (existing.add(vd)) {
-                    queue.add(vd);
-                    newItem.signal();
-                }
-            }
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public VertexDistance pollFirst() {
-        try {
-            lock.lock();
-            final VertexDistance polled = queue.poll();
-            if (polled != null) {
-                existing.remove(polled);
-            }
-            return polled;
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public VertexDistance awaitFirst() {
-        try {
-            lock.lock();
-            while (queue.isEmpty()) {
-                newItem.await();
-            }
-            final VertexDistance polled = queue.poll();
-            if (polled != null) {
-                existing.remove(polled);
-            }
-            return polled;
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        } finally {
-            lock.unlock();
-        }
-    }
-}
-
-interface VertexDistanceHeap extends Iterable<VertexDistance> {
+interface VertexDistanceHeap {
     static VertexDistanceHeap create() {
         return new VertexDistanceTreeSet();
     }
 
-    VertexDistanceHeap copy();
-
     VertexDistance pollFirst();
-
-    List<VertexDistance> drain(Predicate<VertexDistance> filter);
 
     boolean addIfCloserAndTrim(VertexDistance current, int efSearch);
 
@@ -326,9 +235,12 @@ interface VertexDistanceHeap extends Iterable<VertexDistance> {
 
     boolean isEmpty();
 
-    Stream<VertexDistance> stream();
-
     int size();
+
+    // TODO: Wow, is this dirty?! But so powerful! The interface could be changed to expose less.
+    void withLockHeldRun(Consumer<TreeSet<VertexDistance>> fnConsumer);
+
+    <T> T withLockHeldGet(Function<TreeSet<VertexDistance>, T> fnConsumer);
 }
 
 class VertexDistanceTreeSet implements VertexDistanceHeap {
@@ -345,33 +257,10 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
     }
 
     @Override
-    public Stream<VertexDistance> stream() {
-        return delegate.stream();
-    }
-
-    @Override
-    public VertexDistanceHeap copy() {
+    public String toString() {
         try {
             lock.lock();
-            final VertexDistanceTreeSet copy = new VertexDistanceTreeSet(delegate);
-            return copy;
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    @Override
-    public List<VertexDistance> drain(Predicate<VertexDistance> filter) {
-        try {
-            lock.lock();
-            final List<VertexDistance> drained = new ArrayList<>(delegate.size());
-            for (VertexDistance vd : delegate) {
-                if (filter.test(vd)) {
-                    drained.add(vd);
-                }
-            }
-            delegate.clear();
-            return drained;
+            return delegate.toString();
         } finally {
             lock.unlock();
         }
@@ -418,11 +307,6 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
     }
 
     @Override
-    public Iterator<VertexDistance> iterator() {
-        return delegate.iterator();
-    }
-
-    @Override
     public void addAll(Iterable<VertexDistance> vertexDistances) {
         try {
             lock.lock();
@@ -447,6 +331,24 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
                 return true;
             }
             return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public void withLockHeldRun(Consumer<TreeSet<VertexDistance>> fnConsume) {
+        withLockHeldGet(delegate -> {
+            fnConsume.accept(delegate);
+            return (Void) null;
+        });
+    }
+
+    @Override
+    public <T> T withLockHeldGet(Function<TreeSet<VertexDistance>, T> fnAccept) {
+        try {
+            lock.lock();
+            return fnAccept.apply(delegate);
         } finally {
             lock.unlock();
         }
@@ -555,18 +457,20 @@ class HNSWIndex {
                         if (best == null) {
                             continue;
                         }
-
-                        for (VertexDistance vdNeighbor : best) {
-                            // If the new vertex would exist in this level, create neighbors for it
-                            if (newVertex.getMaxLevel() >= currentLevel) {
-                                newVertex.addEdge(currentLevel, vdNeighbor);
+                        final int thisLevel = currentLevel;
+                        best.withLockHeldRun(neighbors -> {
+                            for (VertexDistance vdNeighbor : neighbors) {
+                                // If the new vertex would exist in this level, create neighbors for it
+                                if (newVertex.getMaxLevel() >= thisLevel) {
+                                    newVertex.addEdge(thisLevel, vdNeighbor);
+                                }
+                                // Check the edges for this neighbor at the target level to see if this is an improvement.
+                                // Don't process nodes we've already touched again if they remain the best from a previous layer.
+                                if (remapped.add(vdNeighbor.vertex)) {
+                                    vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
+                                }
                             }
-                            // Check the edges for this neighbor at the target level to see if this is an improvement.
-                            // Don't process nodes we've already touched again if they remain the best from a previous layer.
-                            if (remapped.add(vdNeighbor.vertex)) {
-                                vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
-                            }
-                        }
+                        });
                     }
                 });
 
@@ -576,7 +480,7 @@ class HNSWIndex {
                 layers.get(newVertex.getMaxLevel()).add(newVertex));
     }
 
-    private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Iterable<VertexDistance> startingNodes, int level) {
+    private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, VertexDistanceHeap startingNodes, int level) {
         final VertexDistanceHeap best = VertexDistanceHeap.create();
         if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
             return best;
@@ -586,7 +490,7 @@ class HNSWIndex {
         final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
-            candidates.addAll(startingNodes);
+            startingNodes.withLockHeldRun(candidates::addAll);
         }
         if (candidates.isEmpty()) {
             // Find the best neighbors in this level, searching from the entry point
@@ -603,15 +507,16 @@ class HNSWIndex {
                 continue;
             }
 
-            final VertexDistanceHeap edges = current.vertex.getEdges(level);
-            for (VertexDistance edge : edges) { // TODO: CONCURRENT MODIFICATION PROBLEM
-                if (visited.contains(edge.vertex)) {
-                    continue;
-                }
+            current.vertex.getEdges(level).withLockHeldRun(edges -> {
+                for (VertexDistance edge : edges) {
+                    if (visited.contains(edge.vertex)) {
+                        continue;
+                    }
 
-                final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                candidates.add(currentEdge);
-            }
+                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                    candidates.add(currentEdge);
+                }
+            });
         }
 
         return best;
@@ -644,7 +549,7 @@ class HNSWIndex {
             }
             final VertexDistanceHeap candidates = VertexDistanceHeap.create();
             // Carry over best from the last layer rather than starting over
-            candidates.addAll(best);
+            best.withLockHeldRun(candidates::addAll);
             if (candidates.isEmpty()) {
                 // Start at the entry point of this layer if there was nothing to carry
                 final VertexDistance entryVd = new VertexDistance(layers.get(currentLevel).get(0), queryVertex);
@@ -672,30 +577,33 @@ class HNSWIndex {
                     }
                 }
 
-                for (VertexDistance edge : current.vertex.getEdges(currentLevel)) {
-                    if (visited.contains(edge.vertex)) {
-                        continue;
-                    }
+                final int thisLevel = currentLevel;
+                current.vertex.getEdges(thisLevel).withLockHeldRun(edges -> {
+                    for (VertexDistance edge : edges) {
+                        if (visited.contains(edge.vertex)) {
+                            continue;
+                        }
 
-                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVertex);
-                    if (LOGGER.isTraceEnabled()) {
-                        LOGGER.trace("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
-                    }
-                    if (best.addIfCloserAndTrim(currentEdge, EF_SEARCH)) {
-                        // Plan to visit this vertex to check all of its edges also
-                        candidates.add(currentEdge);
+                        final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVertex);
                         if (LOGGER.isTraceEnabled()) {
-                            LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
+                            LOGGER.trace("[{}] {} Visited edge @ {}", thisLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
+                        }
+                        if (best.addIfCloserAndTrim(currentEdge, EF_SEARCH)) {
+                            // Plan to visit this vertex to check all of its edges also
+                            candidates.add(currentEdge);
+                            if (LOGGER.isTraceEnabled()) {
+                                LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", thisLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
+                            }
                         }
                     }
-                }
+                });
             }
         }
 
-        return best.stream()
+        return best.withLockHeldGet(nodes -> nodes.stream()
                 .map(v -> v.vertex)
                 .limit(k) // Clamp the EF_SEARCH to get the best set
-                .toList();
+                .toList());
     }
 
     @Override
@@ -762,12 +670,12 @@ public class HNSWExample {
             throw new IllegalStateException("Query vector didn't match data vector length! They cannot be compared!");
         }
         final Vertex queryVertex = new Vertex(queryVector);
-        LOGGER.info("Searching vertex..."); // , Arrays.toString(queryVertex.getVector()));
+        LOGGER.info("Searching vertex...");
 
         if (LOGGER.isDebugEnabled()) {
             System.out.println();
             LOGGER.debug("All vertex search begins...");
-            for (int oLevel = layers.size() - 1; oLevel >= 0; oLevel--) { // For each layer...;
+            for (int oLevel = layers.size() - 1; oLevel >= 0; oLevel--) {
                 final List<Vertex> vertices = layers.get(oLevel).stream()
                         .sorted(Comparator.comparingDouble(v -> CosineDistanceUtils.cosineSimilarity(queryVector, v.getVector())))
                         .toList();
@@ -775,7 +683,8 @@ public class HNSWExample {
                 for (Vertex v : vertices) {
                     LOGGER.debug("    - Node: {} @ {}, {}", v.getMetadata("id"), oLevel, CosineDistanceUtils.cosineSimilarity(queryVertex, v));
                     for (int level = 0; level <= v.getMaxLevel(); level++) {
-                        LOGGER.debug("        - Edges @ {}: {} : {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")), CosineDistanceUtils.cosineSimilarity(v, queryVertex));
+                        final String edgeIds = v.getEdges(level).withLockHeldGet(edges -> edges.stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
+                        LOGGER.debug("        - Edges @ {}: {} : {}", level, edgeIds, CosineDistanceUtils.cosineSimilarity(v, queryVertex));
                     }
                 }
                 LOGGER.debug("Layer {} ends with {} nodes...", oLevel, vertices.size());
