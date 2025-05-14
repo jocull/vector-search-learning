@@ -576,57 +576,6 @@ class HNSWIndex {
                 layers.get(newVertex.getMaxLevel()).add(newVertex));
     }
 
-    @Deprecated
-    public void addVertex(final Vertex newVertex) {
-        int level = 0;
-        while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
-            level++;
-        }
-
-        newVertex.setMaxLevel(level);
-        while (layers.size() <= level) {
-            layers.add(new ArrayList<>());
-        }
-
-        final Set<Vertex> remapped = new HashSet<>();
-        VertexDistanceHeap propagateBest = null;
-        for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
-            // If there are no nodes in this layer...
-            if (layers.get(currentLevel).isEmpty()) {
-                if (currentLevel == newVertex.getMaxLevel()) {
-                    // ...then it's the first entry - add it.
-                    layers.get(currentLevel).add(newVertex);
-                }
-                // ...there's nothing else to do
-                continue;
-            }
-
-            final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
-            if (LOGGER.isTraceEnabled()) {
-                LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
-            }
-            // For nodes that are underneath us in the layer, associate newer or better peers
-            for (VertexDistance vdNeighbor : best) {
-                // If the new vertex would exist in this level, create neighbors for it
-                if (newVertex.getMaxLevel() >= currentLevel) {
-                    newVertex.addEdge(currentLevel, vdNeighbor);
-                }
-                // Check the edges for this neighbor at the target level to see if this is an improvement.
-                // Don't process nodes we've already touched again if they remain the best from a previous layer.
-                if (remapped.add(vdNeighbor.vertex)) {
-                    vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
-                }
-            }
-
-            // Insert the new node into the level it belongs to
-            if (currentLevel == newVertex.getMaxLevel()) {
-                layers.get(currentLevel).add(newVertex);
-            }
-
-            propagateBest = best;
-        }
-    }
-
     private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Iterable<VertexDistance> startingNodes, int level) {
         final VertexDistanceHeap best = VertexDistanceHeap.create();
         if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
@@ -784,80 +733,6 @@ public class HNSWExample {
                 .toList();
         LOGGER.info("...done.");
 
-//        final double[][] matrix = new double[vectorRange][vectorWidth + 1];
-//        IntStream.range(0, data.size())
-//                .parallel()
-//                .forEach(i -> {
-//                    double normSum = 0.0;
-//                    final double[] v = data.get(i).getVector();
-//                    for (int j = 0; j < v.length; j++) {
-//                        matrix[i][j] = v[j];
-//                        normSum += v[j] * v[j];
-//                    }
-//                    matrix[i][vectorWidth] = Math.sqrt(normSum);
-//                });
-//
-//        final AtomicInteger matrixIncr = new AtomicInteger(0);
-//        IntStream.range(0, matrix.length)
-//                .parallel()
-//                .forEach(i -> {
-//                    final double[] self = matrix[i];
-//                    final double selfNorm = matrix[i][vectorWidth];
-//
-//                    for (int j = 0; j < matrix.length; j++) {
-//                        if (i == j) {
-//                            continue; // don't compare self
-//                        }
-//                        final double[] other = matrix[j];
-//                        final double otherNorm = matrix[j][vectorWidth];
-//
-//                        double dotProduct = 0.0;
-//                        for (int vi = 0; vi < vectorWidth; vi++) {
-//                            dotProduct += self[vi] * other[vi];
-//                        }
-//                        final double cosineDistance = 1 - (dotProduct / (selfNorm * otherNorm));
-//                    }
-//                    final int matrixInc = matrixIncr.getAndIncrement();
-//                    if (matrixInc % 100 == 0 && matrixInc > 0) {
-//                        LOGGER.info("Fast mapping {}...", matrixInc);
-//                    }
-//                });
-
-//        final AtomicInteger selfIncr = new AtomicInteger(0);
-//        final AtomicReference<Instant> lastTime = new AtomicReference<>(Instant.now());
-//        final Map<Vertex, VertexDistanceHeap> distances = new ConcurrentHashMap<>(data.size());
-//        data.parallelStream()
-//                .forEach(self -> {
-//                    final VertexDistanceHeap selfDistances = distances.computeIfAbsent(self, k -> VertexDistanceHeap.create());
-//                    for (Vertex other : data) {
-//                        if (self == other) {
-//                            continue; // don't evaluate self
-//                        }
-//                        // TODO: IS THIS CORRECT?
-//                        //       Should it actually be EF_CONSTRUCTION / EF_SEARCH?
-//                        //       Or is this correct since it's the max number of edges each node should have and
-//                        //       that's what we're brute-forcing?
-//                        selfDistances.addIfCloserAndTrim(new VertexDistance(self, other), Vertex.ML);
-//                    }
-//                    final int itr = selfIncr.incrementAndGet();
-//                    if (itr > 0 && itr % 100 == 0) {
-//                        final Instant now = Instant.now();
-//                        final Instant then = lastTime.getAndSet(now);
-//                        LOGGER.info("Mapping {} / {}... ({}%, {}ms cycle)", itr, data.size(), String.format("%.2f", (itr / (double) data.size() * 100.0)), now.toEpochMilli() - then.toEpochMilli());
-//                    }
-//                });
-
-//        System.out.println();
-//        LOGGER.info("Layers generating...");
-//        for (int i = 0; i < data.size(); i++) {
-//            final Vertex newVertex = data.get(i);
-//            index.addVertex(newVertex);
-//            if (i > 0 && i % 1000 == 0) {
-//                LOGGER.info("{}...", i);
-//            }
-//        }
-//        LOGGER.info("...done.");
-
         System.out.println();
         LOGGER.info("Layers generating...");
         {
@@ -913,15 +788,6 @@ public class HNSWExample {
         final List<Vertex> allVertices = index.getAllVertex().stream()
                 .sorted(Comparator.comparingDouble(v1 -> CosineDistanceUtils.cosineDistance(v1, queryVertex)))
                 .toList();
-        final List<Vertex> allVerticesDisplaySet = allVertices.stream()
-                .limit(topK)
-                .toList();
-//        for (Vertex v : allVerticesDisplaySet) {
-//            LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
-//            for (int level = 0; level <= v.getMaxLevel(); level++) {
-//                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
-//            }
-//        }
 
         System.out.println();
         LOGGER.info("Index searching best matches...");
@@ -934,13 +800,5 @@ public class HNSWExample {
             final Vertex v = similarVertices.get(i);
             LOGGER.info("    - #{} is ID={} @ Brute-Force #{}", (i + 1), v.getMetadata("id"), (allVertices.indexOf(v) + 1));
         }
-
-//        System.out.println();
-//        for (Vertex v : similarVertices) {
-//            LOGGER.info("Similar vertex: Metadata: {}, Distance: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
-//            for (int level = 0; level <= v.getMaxLevel(); level++) {
-//                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
-//            }
-//        }
     }
 }
