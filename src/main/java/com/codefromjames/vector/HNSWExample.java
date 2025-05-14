@@ -644,7 +644,7 @@ public class HNSWExample {
         System.out.println();
         LOGGER.info("Layers generating...");
         {
-            final List<List<Vertex>> partitions = ListPartitioner.partition(data, 256);
+            final List<List<Vertex>> partitions = ListPartitioner.partition(data, Vertex.ML * 8);
             int i = 0;
             for (List<Vertex> partition : partitions) {
                 i += partition.size();
