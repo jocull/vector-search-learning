@@ -7,18 +7,12 @@ import jdk.incubator.vector.VectorSpecies;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.RecursiveTask;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 class CosineDistanceUtils {
     private static final VectorSpecies<Double> SPECIES = DoubleVector.SPECIES_PREFERRED;
@@ -91,6 +85,48 @@ class CosineDistanceUtils {
 
     static double cosineDistance(Vertex vtx1, Vertex vtx2) {
         return 1 - cosineSimilarity(vtx1, vtx2);
+    }
+}
+
+class ListPartitioner {
+    static <T> List<List<T>> partition(List<T> list, int size) {
+        if (size <= 0) {
+            throw new IllegalArgumentException("Size must be positive.");
+        }
+        final List<List<T>> result = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) {
+            final int end = Math.min(i + size, list.size());
+            final List<T> sublist = new ArrayList<>();
+            for (int j = i; j < end; j++) {
+                sublist.add(list.get(j));
+            }
+            result.add(sublist);
+        }
+        return result;
+    }
+
+    static <T> List<List<T>> partitionIntoGroups(List<T> list, int groupCount) {
+        if (groupCount <= 0) {
+            throw new IllegalArgumentException("Group count must be positive.");
+        }
+
+        final int size = list.size();
+        final int baseSize = size / groupCount;
+        final int remainder = size % groupCount;
+
+        List<List<T>> result = new ArrayList<>();
+        int index = 0;
+
+        for (int i = 0; i < groupCount; i++) {
+            final int currentSize = baseSize + (i < remainder ? 1 : 0);
+            final List<T> group = new ArrayList<>();
+            for (int j = 0; j < currentSize; j++) {
+                group.add(list.get(index));
+                index++;
+            }
+            result.add(group);
+        }
+        return result;
     }
 }
 
@@ -168,7 +204,7 @@ class Vertex {
     }
 
     public boolean addEdge(int level, VertexDistance neighbor) {
-        while (edges.size() <= level) {
+        while (edges.size() <= level) { // TODO: Can this just be done up front instead?
             edges.add(VertexDistanceHeap.create());
         }
         if (this == neighbor.vertex) {
@@ -211,99 +247,13 @@ class Vertex {
         return "Vertex{" +
                 "metadata=" + metadata +
                 ", maxLevel=" + maxLevel +
-                ", vector=" + Arrays.toString(vector) +
+                ", vector=[" + vector.length + "]" +
                 ", edges=[" + edges.stream().map(x -> Integer.toString(x.size())).collect(Collectors.joining(",")) + ']' +
                 '}';
     }
 }
 
-class VertexDistancePriorityQueue {
-    private static final Comparator<VertexDistance> COMPARATOR = Comparator.comparingDouble(vd -> vd.distance);
-
-    private final ReentrantLock lock = new ReentrantLock();
-    private final Condition newItem = lock.newCondition();
-    private final Set<VertexDistance> existing = new HashSet<>();
-    private final PriorityQueue<VertexDistance> queue = new PriorityQueue<>(COMPARATOR);
-
-    public int size() {
-        try {
-            lock.lock();
-            return queue.size();
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public boolean isEmpty() {
-        try {
-            lock.lock();
-            return queue.isEmpty();
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public boolean add(VertexDistance vertexDistance) {
-        try {
-            lock.lock();
-            if (existing.add(vertexDistance)) {
-                queue.add(vertexDistance);
-                newItem.signal();
-                return true;
-            }
-            return false;
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public void addAll(Iterable<VertexDistance> vertexDistances) {
-        try {
-            lock.lock();
-            for (VertexDistance vd : vertexDistances) {
-                if (existing.add(vd)) {
-                    queue.add(vd);
-                    newItem.signal();
-                }
-            }
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public VertexDistance pollFirst() {
-        try {
-            lock.lock();
-            final VertexDistance polled = queue.poll();
-            if (polled != null) {
-                existing.remove(polled);
-            }
-            return polled;
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public VertexDistance awaitFirst() {
-        try {
-            lock.lock();
-            while (queue.isEmpty()) {
-                newItem.await();
-            }
-            final VertexDistance polled = queue.poll();
-            if (polled != null) {
-                existing.remove(polled);
-            }
-            return polled;
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        } finally {
-            lock.unlock();
-        }
-    }
-}
-
-interface VertexDistanceHeap extends Iterable<VertexDistance> {
+interface VertexDistanceHeap {
     static VertexDistanceHeap create() {
         return new VertexDistanceTreeSet();
     }
@@ -318,9 +268,12 @@ interface VertexDistanceHeap extends Iterable<VertexDistance> {
 
     boolean isEmpty();
 
-    Stream<VertexDistance> stream();
-
     int size();
+
+    // TODO: Wow, is this dirty?! But so powerful! The interface could be changed to expose less.
+    void withLockHeldRun(Consumer<TreeSet<VertexDistance>> fnConsumer);
+
+    <T> T withLockHeldGet(Function<TreeSet<VertexDistance>, T> fnConsumer);
 }
 
 class VertexDistanceTreeSet implements VertexDistanceHeap {
@@ -337,8 +290,13 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
     }
 
     @Override
-    public Stream<VertexDistance> stream() {
-        return delegate.stream();
+    public String toString() {
+        try {
+            lock.lock();
+            return delegate.toString();
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
@@ -382,11 +340,6 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
     }
 
     @Override
-    public Iterator<VertexDistance> iterator() {
-        return delegate.iterator();
-    }
-
-    @Override
     public void addAll(Iterable<VertexDistance> vertexDistances) {
         try {
             lock.lock();
@@ -415,6 +368,24 @@ class VertexDistanceTreeSet implements VertexDistanceHeap {
             lock.unlock();
         }
     }
+
+    @Override
+    public void withLockHeldRun(Consumer<TreeSet<VertexDistance>> fnConsume) {
+        withLockHeldGet(delegate -> {
+            fnConsume.accept(delegate);
+            return (Void) null;
+        });
+    }
+
+    @Override
+    public <T> T withLockHeldGet(Function<TreeSet<VertexDistance>, T> fnAccept) {
+        try {
+            lock.lock();
+            return fnAccept.apply(delegate);
+        } finally {
+            lock.unlock();
+        }
+    }
 }
 
 class HNSWIndex {
@@ -433,131 +404,155 @@ class HNSWIndex {
         return layers.size() - 1;
     }
 
-    static class GraphTraversalTask extends RecursiveTask<VertexDistanceHeap> {
-        private final Vertex newVertex;
-        private final int level;
-        private final VertexDistancePriorityQueue candidates;
-        private final Set<Vertex> visited;
-
-        public GraphTraversalTask(Vertex newVertex, int level, VertexDistancePriorityQueue candidates, Set<Vertex> visited) {
-            this.newVertex = newVertex;
-            this.level = level;
-            this.candidates = candidates;
-            this.visited = visited;
+    public void addVertices(Collection<Vertex> newVertices) {
+        // Step 1:
+        // Assign levels to the incoming batch of vertices and ensure we have the level prepared.
+        int maxLevel = 0;
+        for (Vertex newVertex : newVertices) {
+            int level = 0;
+            while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
+                level++;
+            }
+            maxLevel = Math.max(maxLevel, level);
+            newVertex.setMaxLevel(level);
+        }
+        while (layers.size() <= maxLevel) {
+            layers.add(new ArrayList<>(1000));
         }
 
-        @Override
-        protected VertexDistanceHeap compute() {
-            final VertexDistanceHeap best = VertexDistanceHeap.create();
-            while (!candidates.isEmpty()) {
-                final VertexDistance current = candidates.pollFirst();
-                if (current == null
-                        || visited.contains(current.vertex)) {
-                    continue;
-                }
+        // Step 2:
+        // For each incoming vertex, compare it to all others in the *existing* graph.
+        // We'll find the best relationships here first, to ensure we're really checking the graph
+        // rather than giving up on a full buffer of existing connections.
+        final Map<Vertex, Map<Integer, VertexDistanceHeap>> bestVertexInsertions = newVertices.parallelStream()
+                .collect(Collectors.toMap(
+                        k -> k,
+                        newVertex -> {
+                            final Map<Integer, VertexDistanceHeap> layerBest = new HashMap<>(getCurrentMaxLevel());
+                            VertexDistanceHeap propagateBest = null;
+                            for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+                                // If there are no nodes in this layer...
+                                if (layers.get(currentLevel).isEmpty()) {
+                                    // ...there's nothing else to do
+                                    continue;
+                                }
 
-                visited.add(current.vertex);
-                best.addIfCloserAndTrim(current, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+                                final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
+                                if (LOGGER.isTraceEnabled()) {
+                                    LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
+                                }
+                                propagateBest = best;
+                                layerBest.put(currentLevel, best);
+                            }
+                            return layerBest;
+                        }));
 
+        // Step 3:
+        // For each incoming vertex, compare it to all others in the batch.
+        // We need to do this to ensure that nodes batched together don't miss relationships between themselves.
+        // If the incoming relationships are better than what's in the graph then we'll take them instead.
+        // If they are not, they will be ignored.
+        newVertices.parallelStream()
+                .forEach(self -> {
+                    // Brute force match this vertex with its closest peers in the batch.
+                    // We do this because they won't be visible in the broader graph yet, so we
+                    // precalculate them as edges to capture any potential close matches.
+                    for (Vertex other : newVertices) {
+                        if (self == other) {
+                            continue; // Don't match self
+                        }
 
-                final VertexDistanceHeap edges = current.vertex.getEdges(level);
-                final List<GraphTraversalTask> tasks = new ArrayList<>(edges.size());
-                for (VertexDistance edge : edges) {
-                    if (visited.contains(edge.vertex)) {
-                        continue;
-                    }
-
-                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
-                    visited.add(currentEdge.vertex);
-                    if (best.addIfCloserAndTrim(currentEdge, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
-                        if (candidates.add(currentEdge)) {
-                            GraphTraversalTask task = new GraphTraversalTask(newVertex, level, candidates, visited);
-                            task.fork(); // Begin now to process the candidate that was just added
-                            tasks.add(task);
+                        // Find the common denominator level between the two and map down the levels from the top
+                        final int commonLevel = Math.min(self.getMaxLevel(), other.getMaxLevel());
+                        final double distance = CosineDistanceUtils.cosineDistance(self, other);
+                        for (int level = commonLevel; level >= 0; level--) {
+                            // TODO:
+                            //  because self -> other and other -> self are the same relationship
+                            //  we could probably optimize this somehow... maybe with caching?
+                            //  not sure... and not sure if the overhead makes it worse anyways
+                            self.addEdge(level, new VertexDistance(other, distance));
                         }
                     }
-                }
-                // Join in the best from each branch to aggregate into this one
-                // TODO: This is probably waaaaay too greedy and branches out to everything...
-                for (GraphTraversalTask task : tasks) {
-                    VertexDistanceHeap bestNeighbors = task.join();
-                    for (VertexDistance bestNeighbor : bestNeighbors) {
-                        best.addIfCloserAndTrim(bestNeighbor, EF_CONSTRUCTION); // TODO: Construction specific value if this method is reused later!
+                });
+
+        // Step 4:
+        // Iterate over the best vertex matches at the layers we calculated above.
+        // Update the edges on their targets, replacing any earlier relationships.
+        bestVertexInsertions.entrySet()
+                .parallelStream()
+                .forEach(vertexMapEntry -> {
+                    final Vertex newVertex = vertexMapEntry.getKey();
+                    final Map<Integer, VertexDistanceHeap> bestByLayer = vertexMapEntry.getValue();
+                    final Set<Vertex> remapped = new HashSet<>();
+                    for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+                        // For nodes that are underneath us in the layer, associate newer or better peers
+                        final VertexDistanceHeap best = bestByLayer.get(currentLevel);
+                        if (best == null) {
+                            continue;
+                        }
+                        final int thisLevel = currentLevel;
+                        best.withLockHeldRun(neighbors -> {
+                            for (VertexDistance vdNeighbor : neighbors) {
+                                // If the new vertex would exist in this level, create neighbors for it
+                                if (newVertex.getMaxLevel() >= thisLevel) {
+                                    newVertex.addEdge(thisLevel, vdNeighbor);
+                                }
+                                // Check the edges for this neighbor at the target level to see if this is an improvement.
+                                // Don't process nodes we've already touched again if they remain the best from a previous layer.
+                                if (remapped.add(vdNeighbor.vertex)) {
+                                    vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
+                                }
+                            }
+                        });
                     }
-                }
-            }
+                });
+
+        // Step 5:
+        // Complete the process by adding them into the graph after connections are fully built.
+        newVertices.forEach(newVertex ->
+                layers.get(newVertex.getMaxLevel()).add(newVertex));
+    }
+
+    private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, VertexDistanceHeap startingNodes, int level) {
+        final VertexDistanceHeap best = VertexDistanceHeap.create();
+        if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
             return best;
         }
-    }
 
-    public void addVertex(final Vertex newVertex) {
-        int level = 0;
-        while (HNSWIndex.RANDOM.nextDouble() < LEVEL_PROBABILITY && level < MAX_LEVEL) {
-            level++;
-        }
-
-        newVertex.setMaxLevel(level);
-        while (layers.size() <= level) {
-            layers.add(new ArrayList<>());
-        }
-
-        final Set<Vertex> remapped = new HashSet<>();
-        VertexDistanceHeap propagateBest = null;
-        for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
-            // If there are no nodes in this layer...
-            if (layers.get(currentLevel).isEmpty()) {
-                if (currentLevel == newVertex.getMaxLevel()) {
-                    // ...then it's the first entry - add it.
-                    layers.get(currentLevel).add(newVertex);
-                }
-                // ...there's nothing else to do
-                continue;
-            }
-
-            final VertexDistanceHeap best = getVertexDistancesAtLayer(newVertex, propagateBest, currentLevel);
-            if (LOGGER.isTraceEnabled()) {
-                LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
-            }
-            // For nodes that are underneath us in the layer, associate newer or better peers
-            for (VertexDistance vdNeighbor : best) {
-                // If the new vertex would exist in this level, create neighbors for it
-                if (newVertex.getMaxLevel() >= currentLevel) {
-                    newVertex.addEdge(currentLevel, vdNeighbor);
-                }
-                // Check the edges for this neighbor at the target level to see if this is an improvement.
-                // Don't process nodes we've already touched again if they remain the best from a previous layer.
-                if (remapped.add(vdNeighbor.vertex)) {
-                    vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
-                }
-            }
-
-            // Insert the new node into the level it belongs to
-            if (currentLevel == newVertex.getMaxLevel()) {
-                layers.get(currentLevel).add(newVertex);
-            }
-
-            propagateBest = best;
-        }
-    }
-
-    private VertexDistanceHeap getVertexDistancesAtLayer(Vertex newVertex, Iterable<VertexDistance> startingNodes, int level) {
-        if (layers.size() - 1 < level || layers.get(level).isEmpty()) {
-            return VertexDistanceHeap.create();
-        }
-
-        final Set<Vertex> visited = Collections.synchronizedSet(new HashSet<>());
-        final VertexDistancePriorityQueue candidates = new VertexDistancePriorityQueue();
+        final Set<Vertex> visited = new HashSet<>(EF_CONSTRUCTION);
+        final VertexDistanceHeap candidates = VertexDistanceHeap.create();
         if (startingNodes != null) {
             // Find the best neighbors in this level, searching from the previous level's matches
-            candidates.addAll(startingNodes);
+            startingNodes.withLockHeldRun(candidates::addAll);
         }
         if (candidates.isEmpty()) {
             // Find the best neighbors in this level, searching from the entry point
             candidates.add(new VertexDistance(layers.get(level).get(0), newVertex));
         }
 
-        // Entry point
-        return ForkJoinPool.commonPool().invoke(new GraphTraversalTask(newVertex, level, candidates, visited));
+        while (!candidates.isEmpty()) {
+            final VertexDistance current = candidates.pollFirst();
+            if (!visited.add(current.vertex)) {
+                continue;
+            }
+            if (!best.addIfCloserAndTrim(current, EF_CONSTRUCTION)) { // TODO: Construction specific value if this method is reused later!
+                // If this vertex is not better, don't consider its edges either
+                continue;
+            }
+
+            current.vertex.getEdges(level).withLockHeldRun(edges -> {
+                for (VertexDistance edge : edges) {
+                    if (visited.contains(edge.vertex)) {
+                        continue;
+                    }
+
+                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, newVertex);
+                    candidates.add(currentEdge);
+                }
+            });
+        }
+
+        return best;
     }
 
     public List<List<Vertex>> getAllLayers() {
@@ -587,7 +582,7 @@ class HNSWIndex {
             }
             final VertexDistanceHeap candidates = VertexDistanceHeap.create();
             // Carry over best from the last layer rather than starting over
-            candidates.addAll(best);
+            best.withLockHeldRun(candidates::addAll);
             if (candidates.isEmpty()) {
                 // Start at the entry point of this layer if there was nothing to carry
                 final VertexDistance entryVd = new VertexDistance(layers.get(currentLevel).get(0), queryVertex);
@@ -615,30 +610,33 @@ class HNSWIndex {
                     }
                 }
 
-                for (VertexDistance edge : current.vertex.getEdges(currentLevel)) {
-                    if (visited.contains(edge.vertex)) {
-                        continue;
-                    }
+                final int thisLevel = currentLevel;
+                current.vertex.getEdges(thisLevel).withLockHeldRun(edges -> {
+                    for (VertexDistance edge : edges) {
+                        if (visited.contains(edge.vertex)) {
+                            continue;
+                        }
 
-                    final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVertex);
-                    if (LOGGER.isTraceEnabled()) {
-                        LOGGER.trace("[{}] {} Visited edge @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
-                    }
-                    if (best.addIfCloserAndTrim(currentEdge, EF_SEARCH)) {
-                        // Plan to visit this vertex to check all of its edges also
-                        candidates.add(currentEdge);
+                        final VertexDistance currentEdge = new VertexDistance(edge.vertex, queryVertex);
                         if (LOGGER.isTraceEnabled()) {
-                            LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", currentLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
+                            LOGGER.trace("[{}] {} Visited edge @ {}", thisLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance);
+                        }
+                        if (best.addIfCloserAndTrim(currentEdge, EF_SEARCH)) {
+                            // Plan to visit this vertex to check all of its edges also
+                            candidates.add(currentEdge);
+                            if (LOGGER.isTraceEnabled()) {
+                                LOGGER.trace("[{}] !!!! {} Vertex is better @ {} vs best[{}] @ {}", thisLevel, currentEdge.vertex.getMetadata("id"), currentEdge.distance, best.size(), best.pollFirst().distance);
+                            }
                         }
                     }
-                }
+                });
             }
         }
 
-        return best.stream()
+        return best.withLockHeldGet(nodes -> nodes.stream()
                 .map(v -> v.vertex)
                 .limit(k) // Clamp the EF_SEARCH to get the best set
-                .toList();
+                .toList());
     }
 
     @Override
@@ -676,36 +674,14 @@ public class HNSWExample {
                 .toList();
         LOGGER.info("...done.");
 
-        final AtomicInteger selfIncr = new AtomicInteger(0);
-        final AtomicReference<Instant> lastTime = new AtomicReference<>(Instant.now());
-        final Map<Vertex, VertexDistanceHeap> distances = new ConcurrentHashMap<>(data.size());
-        data.parallelStream()
-                .forEach(self -> {
-                    final VertexDistanceHeap selfDistances = distances.computeIfAbsent(self, k -> VertexDistanceHeap.create());
-                    for (Vertex other : data) {
-                        if (self == other) {
-                            continue; // don't evaluate self
-                        }
-                        // TODO: IS THIS CORRECT?
-                        //       Should it actually be EF_CONSTRUCTION / EF_SEARCH?
-                        //       Or is this correct since it's the max number of edges each node should have and
-                        //       that's what we're brute-forcing?
-                        selfDistances.addIfCloserAndTrim(new VertexDistance(self, other), Vertex.ML);
-                    }
-                    final int itr = selfIncr.incrementAndGet();
-                    if (itr > 0 && itr % 100 == 0) {
-                        final Instant now = Instant.now();
-                        final Instant then = lastTime.getAndSet(now);
-                        LOGGER.info("Mapping {} / {}... ({}%, {}ms cycle)", itr, data.size(), String.format("%.2f", (itr / (double) data.size() * 100.0)), now.toEpochMilli() - then.toEpochMilli());
-                    }
-                });
-
         System.out.println();
         LOGGER.info("Layers generating...");
-        for (int i = 0; i < data.size(); i++) {
-            final Vertex newVertex = data.get(i);
-            index.addVertex(newVertex);
-            if (i > 0 && i % 1000 == 0) {
+        {
+            final List<List<Vertex>> partitions = ListPartitioner.partition(data, Vertex.ML * 8);
+            int i = 0;
+            for (List<Vertex> partition : partitions) {
+                i += partition.size();
+                index.addVertices(partition);
                 LOGGER.info("{}...", i);
             }
         }
@@ -727,12 +703,12 @@ public class HNSWExample {
             throw new IllegalStateException("Query vector didn't match data vector length! They cannot be compared!");
         }
         final Vertex queryVertex = new Vertex(queryVector);
-        LOGGER.info("Searching vertex..."); // , Arrays.toString(queryVertex.getVector()));
+        LOGGER.info("Searching vertex...");
 
         if (LOGGER.isDebugEnabled()) {
             System.out.println();
             LOGGER.debug("All vertex search begins...");
-            for (int oLevel = layers.size() - 1; oLevel >= 0; oLevel--) { // For each layer...;
+            for (int oLevel = layers.size() - 1; oLevel >= 0; oLevel--) {
                 final List<Vertex> vertices = layers.get(oLevel).stream()
                         .sorted(Comparator.comparingDouble(v -> CosineDistanceUtils.cosineSimilarity(queryVector, v.getVector())))
                         .toList();
@@ -740,7 +716,8 @@ public class HNSWExample {
                 for (Vertex v : vertices) {
                     LOGGER.debug("    - Node: {} @ {}, {}", v.getMetadata("id"), oLevel, CosineDistanceUtils.cosineSimilarity(queryVertex, v));
                     for (int level = 0; level <= v.getMaxLevel(); level++) {
-                        LOGGER.debug("        - Edges @ {}: {} : {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")), CosineDistanceUtils.cosineSimilarity(v, queryVertex));
+                        final String edgeIds = v.getEdges(level).withLockHeldGet(edges -> edges.stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
+                        LOGGER.debug("        - Edges @ {}: {} : {}", level, edgeIds, CosineDistanceUtils.cosineSimilarity(v, queryVertex));
                     }
                 }
                 LOGGER.debug("Layer {} ends with {} nodes...", oLevel, vertices.size());
@@ -753,15 +730,6 @@ public class HNSWExample {
         final List<Vertex> allVertices = index.getAllVertex().stream()
                 .sorted(Comparator.comparingDouble(v1 -> CosineDistanceUtils.cosineDistance(v1, queryVertex)))
                 .toList();
-        final List<Vertex> allVerticesDisplaySet = allVertices.stream()
-                .limit(topK)
-                .toList();
-//        for (Vertex v : allVerticesDisplaySet) {
-//            LOGGER.info("All vertex: Metadata: {} @ {}, Distance: {}", v.getMetadata("id"), v.getMaxLevel(), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
-//            for (int level = 0; level <= v.getMaxLevel(); level++) {
-//                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
-//            }
-//        }
 
         System.out.println();
         LOGGER.info("Index searching best matches...");
@@ -774,13 +742,5 @@ public class HNSWExample {
             final Vertex v = similarVertices.get(i);
             LOGGER.info("    - #{} is ID={} @ Brute-Force #{}", (i + 1), v.getMetadata("id"), (allVertices.indexOf(v) + 1));
         }
-
-//        System.out.println();
-//        for (Vertex v : similarVertices) {
-//            LOGGER.info("Similar vertex: Metadata: {}, Distance: {}", v.getMetadata("id"), CosineDistanceUtils.cosineSimilarity(queryVertex, v));
-//            for (int level = 0; level <= v.getMaxLevel(); level++) {
-//                LOGGER.info("    - Edges @ {}: {}", level, v.getEdges(level).stream().map(vd -> vd.vertex.getMetadata("id").toString()).sorted().collect(Collectors.joining(",")));
-//            }
-//        }
     }
 }
