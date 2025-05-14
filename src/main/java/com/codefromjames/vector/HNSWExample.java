@@ -505,15 +505,11 @@ class HNSWIndex {
                     }
                 });
 
-        final Map<Vertex, List<VertexDistanceHeap>> bestVertexInsertions = newVertices.parallelStream()
+        final Map<Vertex, Map<Integer, VertexDistanceHeap>> bestVertexInsertions = newVertices.parallelStream()
                 .collect(Collectors.toMap(
                         k -> k,
                         newVertex -> {
-                            final List<VertexDistanceHeap> layerBest = new ArrayList<>(getCurrentMaxLevel());
-                            while (layerBest.size() < getCurrentMaxLevel()) {
-                                layerBest.add(null);
-                            }
-
+                            final Map<Integer, VertexDistanceHeap> layerBest = new HashMap<>(getCurrentMaxLevel());
                             VertexDistanceHeap propagateBest = null;
                             for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
                                 // If there are no nodes in this layer...
@@ -527,7 +523,7 @@ class HNSWIndex {
                                     LOGGER.trace("{} : Retained {} best at layer {}", newVertex.getMetadata("id"), best.size(), currentLevel);
                                 }
                                 propagateBest = best;
-                                layerBest.set(currentLevel, best);
+                                layerBest.put(currentLevel, best);
                             }
                             return layerBest;
                         }));
@@ -537,6 +533,10 @@ class HNSWIndex {
             for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
                 // For nodes that are underneath us in the layer, associate newer or better peers
                 final VertexDistanceHeap best = bestByLayer.get(currentLevel);
+                if (best == null) {
+                    continue;
+                }
+
                 for (VertexDistance vdNeighbor : best) {
                     // If the new vertex would exist in this level, create neighbors for it
                     if (newVertex.getMaxLevel() >= currentLevel) {
