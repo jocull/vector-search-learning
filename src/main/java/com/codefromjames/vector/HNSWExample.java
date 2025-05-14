@@ -528,28 +528,32 @@ class HNSWIndex {
                             return layerBest;
                         }));
 
-        bestVertexInsertions.forEach((newVertex, bestByLayer) -> {
-            final Set<Vertex> remapped = new HashSet<>();
-            for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
-                // For nodes that are underneath us in the layer, associate newer or better peers
-                final VertexDistanceHeap best = bestByLayer.get(currentLevel);
-                if (best == null) {
-                    continue;
-                }
+        bestVertexInsertions.entrySet()
+                .parallelStream()
+                .forEach(vertexMapEntry -> {
+                    final Vertex newVertex = vertexMapEntry.getKey();
+                    final Map<Integer, VertexDistanceHeap> bestByLayer = vertexMapEntry.getValue();
+                    final Set<Vertex> remapped = new HashSet<>();
+                    for (int currentLevel = getCurrentMaxLevel(); currentLevel >= 0; currentLevel--) {
+                        // For nodes that are underneath us in the layer, associate newer or better peers
+                        final VertexDistanceHeap best = bestByLayer.get(currentLevel);
+                        if (best == null) {
+                            continue;
+                        }
 
-                for (VertexDistance vdNeighbor : best) {
-                    // If the new vertex would exist in this level, create neighbors for it
-                    if (newVertex.getMaxLevel() >= currentLevel) {
-                        newVertex.addEdge(currentLevel, vdNeighbor);
+                        for (VertexDistance vdNeighbor : best) {
+                            // If the new vertex would exist in this level, create neighbors for it
+                            if (newVertex.getMaxLevel() >= currentLevel) {
+                                newVertex.addEdge(currentLevel, vdNeighbor);
+                            }
+                            // Check the edges for this neighbor at the target level to see if this is an improvement.
+                            // Don't process nodes we've already touched again if they remain the best from a previous layer.
+                            if (remapped.add(vdNeighbor.vertex)) {
+                                vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
+                            }
+                        }
                     }
-                    // Check the edges for this neighbor at the target level to see if this is an improvement.
-                    // Don't process nodes we've already touched again if they remain the best from a previous layer.
-                    if (remapped.add(vdNeighbor.vertex)) {
-                        vdNeighbor.vertex.addEdge(newVertex.getMaxLevel(), new VertexDistance(newVertex, vdNeighbor.distance));
-                    }
-                }
-            }
-        });
+                });
 
         // Last, add them into the graph when connections are fully built
         newVertices.forEach(newVertex -> {
