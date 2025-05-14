@@ -470,6 +470,8 @@ class HNSWIndex {
     }
 
     public void addVertices(Collection<Vertex> newVertices) {
+        // Step 1:
+        // Assign levels to the incoming batch of vertices and ensure we have the level prepared.
         int maxLevel = 0;
         for (Vertex newVertex : newVertices) {
             int level = 0;
@@ -477,13 +479,17 @@ class HNSWIndex {
                 level++;
             }
             maxLevel = Math.max(maxLevel, level);
-
             newVertex.setMaxLevel(level);
-            while (layers.size() <= level) {
-                layers.add(new ArrayList<>());
-            }
+        }
+        while (layers.size() <= maxLevel) {
+            layers.add(new ArrayList<>(1000));
         }
 
+        // Step 2:
+        // For each incoming vertex, compare it to all others in the batch.
+        // We need to do this to ensure that nodes batched together don't miss relationships between themselves.
+        // If the incoming relationships are better than what's in the graph they will remain after the next step.
+        // If they are not, they will be replaced.
         newVertices.parallelStream()
                 .forEach(self -> {
                     // Brute force match this vertex with its closest peers in the batch.
@@ -493,18 +499,24 @@ class HNSWIndex {
                         if (self == other) {
                             continue; // Don't match self
                         }
-                        final double distance = CosineDistanceUtils.cosineDistance(self, other);
-                        final VertexDistance vd = new VertexDistance(self, other);
 
-                        // Find the common denominator level between the two
+                        // Find the common denominator level between the two and map down the levels from the top
                         final int commonLevel = Math.min(self.getMaxLevel(), other.getMaxLevel());
-
+                        final double distance = CosineDistanceUtils.cosineDistance(self, other);
                         for (int level = commonLevel; level >= 0; level--) {
+                            // TODO:
+                            //  because self -> other and other -> self are the same relationship
+                            //  we could probably optimize this somehow... maybe with caching?
+                            //  not sure... and not sure if the overhead makes it worse anyways
                             self.addEdge(level, new VertexDistance(other, distance));
                         }
                     }
                 });
 
+        // Step 3:
+        // For each incoming vertex, compare it to all others in the *existing* graph.
+        // We'll find the best relationships here, and eventually knock out any worse relationships
+        // from the first pass above.
         final Map<Vertex, Map<Integer, VertexDistanceHeap>> bestVertexInsertions = newVertices.parallelStream()
                 .collect(Collectors.toMap(
                         k -> k,
@@ -528,6 +540,9 @@ class HNSWIndex {
                             return layerBest;
                         }));
 
+        // Step 4:
+        // Iterate over the best vertex matches at the layers we calculated above.
+        // Update the edges on their targets, replacing any earlier relationships.
         bestVertexInsertions.entrySet()
                 .parallelStream()
                 .forEach(vertexMapEntry -> {
@@ -555,10 +570,10 @@ class HNSWIndex {
                     }
                 });
 
-        // Last, add them into the graph when connections are fully built
-        newVertices.forEach(newVertex -> {
-            layers.get(newVertex.getMaxLevel()).add(newVertex);
-        });
+        // Step 5:
+        // Complete the process by adding them into the graph after connections are fully built.
+        newVertices.forEach(newVertex ->
+                layers.get(newVertex.getMaxLevel()).add(newVertex));
     }
 
     @Deprecated
