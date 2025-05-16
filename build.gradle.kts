@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    id("application")
 }
 
 group = "com.codefromjames"
@@ -17,13 +18,6 @@ dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.13")
 }
 
-// Set JDK version and enable preview features
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
-    }
-}
-
 tasks.compileJava {
     options.compilerArgs.add("--enable-preview")
     options.compilerArgs.add("--add-modules")
@@ -34,6 +28,12 @@ tasks.compileTestJava {
     options.compilerArgs.add("--enable-preview")
     options.compilerArgs.add("--add-modules")
     options.compilerArgs.add("jdk.incubator.vector")
+}
+
+application {
+    mainClass = "com.codefromjames.vector.HNSWExample"
+    applicationDefaultJvmArgs = listOf("--enable-preview",
+                                 "--add-modules", "jdk.incubator.vector")
 }
 
 tasks.test {
